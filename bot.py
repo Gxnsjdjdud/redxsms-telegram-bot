@@ -1,19 +1,18 @@
+import os
 import requests
 import re
-import os
 import json
 
-API_KEY = os.environ["API_KEY"]
+api_key = os.environ["API_KEY"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-CHAT_ID = "-1004469160922"
+CHAT_ID = "-1003178872820"
 
-url = 'https://redxsms.com/api/v1/iprn/messages'
+url = "https://redxsms.com/api/v1/iprn/messages"
 
 headers = {
-    'Authorization': f'Bearer {api_key}',
-    'Accept': 'application/json'
+    "Authorization": f"Bearer {api_key}",
+    "Accept": "application/json"
 }
-
 LAST_ID_FILE = "last_id.txt"
 
 def get_last_processed_id():
