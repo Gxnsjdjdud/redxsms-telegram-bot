@@ -4,7 +4,6 @@ import re
 import json
 import time
 import threading
-from datetime import datetime, timezone, timedelta
 
 api_key = os.environ["API_KEY"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
@@ -18,7 +17,12 @@ headers = {
 }
 
 PROCESSED_IDS_FILE = "processed_ids.txt"
-BD_TZ = timezone(timedelta(hours=6))
+
+def clear_processed_ids():
+    """বট স্টার্ট হলে পুরনো সব ID মুছে ফেলবে"""
+    if os.path.exists(PROCESSED_IDS_FILE):
+        os.remove(PROCESSED_IDS_FILE)
+        print("→ processed_ids.txt cleared (old + new will be sent again)")
 
 def load_processed_ids():
     if os.path.exists(PROCESSED_IDS_FILE):
@@ -30,49 +34,62 @@ def save_processed_id(msg_id):
     with open(PROCESSED_IDS_FILE, "a") as f:
         f.write(str(msg_id) + "\n")
 
-def get_country_flag(number):
-    country_flags = {
-        "93": "🇦🇫", "355": "🇦🇱", "213": "🇩🇿", "376": "🇦🇩", "244": "🇦🇴",
-        "54": "🇦🇷", "374": "🇦🇲", "61": "🇦🇺", "43": "🇦🇹", "994": "🇦🇿",
-        "973": "🇧🇭", "880": "🇧🇩", "375": "🇧🇾", "32": "🇧🇪", "501": "🇧🇿",
-        "229": "🇧🇯", "975": "🇧🇹", "591": "🇧🇴", "387": "🇧🇦", "267": "🇧🇼",
-        "55": "🇧🇷", "673": "🇧🇳", "359": "🇧🇬", "226": "🇧🇫", "257": "🇧🇮",
-        "855": "🇰🇭", "237": "🇨🇲", "1": "🇺🇸", "238": "🇨🇻", "236": "🇨🇫",
-        "235": "🇹🇩", "56": "🇨🇱", "86": "🇨🇳", "57": "🇨🇴", "269": "🇰🇲",
-        "242": "🇨🇬", "243": "🇨🇩", "506": "🇨🇷", "385": "🇭🇷", "53": "🇨🇺",
-        "357": "🇨🇾", "420": "🇨🇿", "45": "🇩🇰", "253": "🇩🇯", "1767": "🇩🇲",
-        "1809": "🇩🇴", "593": "🇪🇨", "20": "🇪🇬", "503": "🇸🇻", "240": "🇬🇶",
-        "291": "🇪🇷", "372": "🇪🇪", "251": "🇪🇹", "679": "🇫🇯", "358": "🇫🇮",
-        "33": "🇫🇷", "241": "🇬🇦", "220": "🇬🇲", "995": "🇬🇪", "49": "🇩🇪",
-        "233": "🇬🇭", "30": "🇬🇷", "502": "🇬🇹", "224": "🇬🇳", "245": "🇬🇼",
-        "592": "🇬🇾", "509": "🇭🇹", "504": "🇭🇳", "36": "🇭🇺", "354": "🇮🇸",
-        "91": "🇮🇳", "62": "🇮🇩", "98": "🇮🇷", "964": "🇮🇶", "353": "🇮🇪",
-        "972": "🇮🇱", "39": "🇮🇹", "1876": "🇯🇲", "81": "🇯🇵", "962": "🇯🇴",
-        "7": "🇷🇺", "254": "🇰🇪", "965": "🇰🇼", "996": "🇰🇬", "856": "🇱🇦",
-        "371": "🇱🇻", "961": "🇱🇧", "266": "🇱🇸", "231": "🇱🇷", "218": "🇱🇾",
-        "423": "🇱🇮", "370": "🇱🇹", "352": "🇱🇺", "261": "🇲🇬", "265": "🇲🇼",
-        "60": "🇲🇾", "960": "🇲🇻", "223": "🇲🇱", "356": "🇲🇹", "52": "🇲🇽",
-        "373": "🇲🇩", "377": "🇲🇨", "976": "🇲🇳", "382": "🇲🇪", "212": "🇲🇦",
-        "258": "🇲🇿", "95": "🇲🇲", "264": "🇳🇦", "977": "🇳🇵", "31": "🇳🇱",
-        "64": "🇳🇿", "505": "🇳🇮", "227": "🇳🇪", "234": "🇳🇬", "47": "🇳🇴",
-        "968": "🇴🇲", "92": "🇵🇰", "970": "🇵🇸", "507": "🇵🇦", "675": "🇵🇬",
-        "595": "🇵🇾", "51": "🇵🇪", "63": "🇵🇭", "48": "🇵🇱", "351": "🇵🇹",
-        "974": "🇶🇦", "40": "🇷🇴", "250": "🇷🇼", "966": "🇸🇦", "221": "🇸🇳",
-        "381": "🇷🇸", "248": "🇸🇨", "232": "🇸🇱", "65": "🇸🇬", "421": "🇸🇰",
-        "386": "🇸🇮", "252": "🇸🇴", "27": "🇿🇦", "82": "🇰🇷", "34": "🇪🇸",
-        "94": "🇱🇰", "249": "🇸🇩", "597": "🇸🇷", "46": "🇸🇪", "41": "🇨🇭",
-        "963": "🇸🇾", "886": "🇹🇼", "992": "🇹🇯", "255": "🇹🇿", "66": "🇹🇭",
-        "228": "🇹🇬", "676": "🇹🇴", "216": "🇹🇳", "90": "🇹🇷", "993": "🇹🇲",
-        "256": "🇺🇬", "380": "🇺🇦", "971": "🇦🇪", "44": "🇬🇧", "598": "🇺🇾",
-        "998": "🇺🇿", "58": "🇻🇪", "84": "🇻🇳", "967": "🇾🇪", "260": "🇿🇲",
-        "263": "🇿🇼"
+def get_country_info(number):
+    data = {
+        "93": ("🇦🇫", "AF"), "355": ("🇦🇱", "AL"), "213": ("🇩🇿", "DZ"), "376": ("🇦🇩", "AD"),
+        "244": ("🇦🇴", "AO"), "54": ("🇦🇷", "AR"), "374": ("🇦🇲", "AM"), "61": ("🇦🇺", "AU"),
+        "43": ("🇦🇹", "AT"), "994": ("🇦🇿", "AZ"), "973": ("🇧🇭", "BH"), "880": ("🇧🇩", "BD"),
+        "375": ("🇧🇾", "BY"), "32": ("🇧🇪", "BE"), "501": ("🇧🇿", "BZ"), "229": ("🇧🇯", "BJ"),
+        "975": ("🇧🇹", "BT"), "591": ("🇧🇴", "BO"), "387": ("🇧🇦", "BA"), "267": ("🇧🇼", "BW"),
+        "55": ("🇧🇷", "BR"), "673": ("🇧🇳", "BN"), "359": ("🇧🇬", "BG"), "226": ("🇧🇫", "BF"),
+        "257": ("🇧🇮", "BI"), "855": ("🇰🇭", "KH"), "237": ("🇨🇲", "CM"), "1": ("🇺🇸", "US"),
+        "238": ("🇨🇻", "CV"), "236": ("🇨🇫", "CF"), "235": ("🇹🇩", "TD"), "56": ("🇨🇱", "CL"),
+        "86": ("🇨🇳", "CN"), "57": ("🇨🇴", "CO"), "269": ("🇰🇲", "KM"), "242": ("🇨🇬", "CG"),
+        "243": ("🇨🇩", "CD"), "506": ("🇨🇷", "CR"), "385": ("🇭🇷", "HR"), "53": ("🇨🇺", "CU"),
+        "357": ("🇨🇾", "CY"), "420": ("🇨🇿", "CZ"), "45": ("🇩🇰", "DK"), "253": ("🇩🇯", "DJ"),
+        "1767": ("🇩🇲", "DM"), "1809": ("🇩🇴", "DO"), "593": ("🇪🇨", "EC"), "20": ("🇪🇬", "EG"),
+        "503": ("🇸🇻", "SV"), "240": ("🇬🇶", "GQ"), "291": ("🇪🇷", "ER"), "372": ("🇪🇪", "EE"),
+        "251": ("🇪🇹", "ET"), "679": ("🇫🇯", "FJ"), "358": ("🇫🇮", "FI"), "33": ("🇫🇷", "FR"),
+        "241": ("🇬🇦", "GA"), "220": ("🇬🇲", "GM"), "995": ("🇬🇪", "GE"), "49": ("🇩🇪", "DE"),
+        "233": ("🇬🇭", "GH"), "30": ("🇬🇷", "GR"), "502": ("🇬🇹", "GT"), "224": ("🇬🇳", "GN"),
+        "245": ("🇬🇼", "GW"), "592": ("🇬🇾", "GY"), "509": ("🇭🇹", "HT"), "504": ("🇭🇳", "HN"),
+        "36": ("🇭🇺", "HU"), "354": ("🇮🇸", "IS"), "91": ("🇮🇳", "IN"), "62": ("🇮🇩", "ID"),
+        "98": ("🇮🇷", "IR"), "964": ("🇮🇶", "IQ"), "353": ("🇮🇪", "IE"), "972": ("🇮🇱", "IL"),
+        "39": ("🇮🇹", "IT"), "1876": ("🇯🇲", "JM"), "81": ("🇯🇵", "JP"), "962": ("🇯🇴", "JO"),
+        "7": ("🇷🇺", "RU"), "254": ("🇰🇪", "KE"), "965": ("🇰🇼", "KW"), "996": ("🇰🇬", "KG"),
+        "856": ("🇱🇦", "LA"), "371": ("🇱🇻", "LV"), "961": ("🇱🇧", "LB"), "266": ("🇱🇸", "LS"),
+        "231": ("🇱🇷", "LR"), "218": ("🇱🇾", "LY"), "423": ("🇱🇮", "LI"), "370": ("🇱🇹", "LT"),
+        "352": ("🇱🇺", "LU"), "261": ("🇲🇬", "MG"), "265": ("🇲🇼", "MW"), "60": ("🇲🇾", "MY"),
+        "960": ("🇲🇻", "MV"), "223": ("🇲🇱", "ML"), "356": ("🇲🇹", "MT"), "52": ("🇲🇽", "MX"),
+        "373": ("🇲🇩", "MD"), "377": ("🇲🇨", "MC"), "976": ("🇲🇳", "MN"), "382": ("🇲🇪", "ME"),
+        "212": ("🇲🇦", "MA"), "258": ("🇲🇿", "MZ"), "95": ("🇲🇲", "MM"), "264": ("🇳🇦", "NA"),
+        "977": ("🇳🇵", "NP"), "31": ("🇳🇱", "NL"), "64": ("🇳🇿", "NZ"), "505": ("🇳🇮", "NI"),
+        "227": ("🇳🇪", "NE"), "234": ("🇳🇬", "NG"), "47": ("🇳🇴", "NO"), "968": ("🇴🇲", "OM"),
+        "92": ("🇵🇰", "PK"), "970": ("🇵🇸", "PS"), "507": ("🇵🇦", "PA"), "675": ("🇵🇬", "PG"),
+        "595": ("🇵🇾", "PY"), "51": ("🇵🇪", "PE"), "63": ("🇵🇭", "PH"), "48": ("🇵🇱", "PL"),
+        "351": ("🇵🇹", "PT"), "974": ("🇶🇦", "QA"), "40": ("🇷🇴", "RO"), "250": ("🇷🇼", "RW"),
+        "966": ("🇸🇦", "SA"), "221": ("🇸🇳", "SN"), "381": ("🇷🇸", "RS"), "248": ("🇸🇨", "SC"),
+        "232": ("🇸🇱", "SL"), "65": ("🇸🇬", "SG"), "421": ("🇸🇰", "SK"), "386": ("🇸🇮", "SI"),
+        "252": ("🇸🇴", "SO"), "27": ("🇿🇦", "ZA"), "82": ("🇰🇷", "KR"), "34": ("🇪🇸", "ES"),
+        "94": ("🇱🇰", "LK"), "249": ("🇸🇩", "SD"), "597": ("🇸🇷", "SR"), "46": ("🇸🇪", "SE"),
+        "41": ("🇨🇭", "CH"), "963": ("🇸🇾", "SY"), "886": ("🇹🇼", "TW"), "992": ("🇹🇯", "TJ"),
+        "255": ("🇹🇿", "TZ"), "66": ("🇹🇭", "TH"), "228": ("🇹🇬", "TG"), "676": ("🇹🇴", "TO"),
+        "216": ("🇹🇳", "TN"), "90": ("🇹🇷", "TR"), "993": ("🇹🇲", "TM"), "256": ("🇺🇬", "UG"),
+        "380": ("🇺🇦", "UA"), "971": ("🇦🇪", "AE"), "44": ("🇬🇧", "GB"), "598": ("🇺🇾", "UY"),
+        "998": ("🇺🇿", "UZ"), "58": ("🇻🇪", "VE"), "84": ("🇻🇳", "VN"), "967": ("🇾🇪", "YE"),
+        "260": ("🇿🇲", "ZM"), "263": ("🇿🇼", "ZW")
     }
-    for code in sorted(country_flags.keys(), key=len, reverse=True):
+    for code in sorted(data.keys(), key=len, reverse=True):
         if number.startswith(code):
-            return country_flags[code]
-    return "🌐"
+            return data[code]
+    return ("🌐", "UN")
 
-def get_service_short(item, message_text):
+def mask_number(number):
+    if len(number) <= 8:
+        return number
+    return number[:2] + "••••" + number[-4:]
+
+def get_service_info(item, message_text):
     name = ""
     for key in ['service', 'app', 'service_name', 'name', 'title', 'gateway']:
         if key in item and item[key]:
@@ -81,35 +98,28 @@ def get_service_short(item, message_text):
                 name = val
                 break
 
+    text = (message_text or "").upper()
     if not name:
-        text = message_text.upper()
         if "TELEGRAM" in text: name = "telegram"
         elif "WHATSAPP" in text: name = "whatsapp"
+        elif "TIKTOK" in text: name = "tiktok"
         elif "1XBET" in text: name = "1xbet"
         elif "GOOGLE" in text: name = "google"
         elif "FACEBOOK" in text: name = "facebook"
         elif "IMO" in text: name = "imo"
         elif "VIBER" in text: name = "viber"
+        elif "INSTAGRAM" in text: name = "instagram"
 
-    if "telegram" in name: return "#TG", "✈️"
-    if "whatsapp" in name: return "#WA", "💬"
-    if "1xbet" in name: return "#1X", "🎰"
-    if "google" in name: return "#GG", "🌐"
-    if "facebook" in name: return "#FB", "📘"
-    if "imo" in name: return "#IMO", "💜"
-    if "viber" in name: return "#VB", "📳"
-    return "#SV", "💬"
-
-def detect_language(text):
-    if re.search(r'[\u0600-\u06FF]', text): return "Arabic"
-    if re.search(r'[\u4e00-\u9fff]', text): return "Chinese"
-    if re.search(r'[\u0400-\u04FF]', text): return "Russian"
-    if re.search(r'[\u0980-\u09FF]', text): return "Bengali"
-    if re.search(r'[\u0e00-\u0e7f]', text): return "Thai"
-    if re.search(r'[\u0900-\u097f]', text): return "Hindi"
-    if re.search(r'[\u3040-\u309f\u30a0-\u30ff]', text): return "Japanese"
-    if re.search(r'[\uac00-\ud7af]', text): return "Korean"
-    return "English"
+    if "telegram" in name: return "✈️", "TG"
+    if "whatsapp" in name: return "💬", "WA"
+    if "tiktok" in name: return "🎵", "TT"
+    if "1xbet" in name: return "🎰", "1X"
+    if "google" in name: return "🌐", "GG"
+    if "facebook" in name: return "📘", "FB"
+    if "instagram" in name: return "📸", "IG"
+    if "imo" in name: return "💜", "IMO"
+    if "viber" in name: return "📳", "VB"
+    return "💬", "SV"
 
 def delete_message_later(chat_id, message_id):
     time.sleep(180)
@@ -119,25 +129,25 @@ def delete_message_later(chat_id, message_id):
     except:
         pass
 
-def send_telegram_message(text, emoji, otp_code):
+def send_telegram_message(text, otp_code):
     tg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
     inline_keyboard = {
         "inline_keyboard": [
             [
                 {
-                    "text": f"{emoji} 📋 Copy OTP",
+                    "text": f"🔑 📋 {otp_code}",
                     "copy_text": {"text": otp_code}
                 }
             ],
             [
                 {
-                    "text": "📞 Get Number",
-                    "url": "https://t.me/Heueururuhhd_bot"
-                },
-                {
                     "text": "📢 Main Channel",
                     "url": "https://t.me/Global_Method_Channel"
+                },
+                {
+                    "text": "📞 Number Channel",
+                    "url": "https://t.me/Heueururuhhd_bot"
                 }
             ]
         ]
@@ -146,7 +156,7 @@ def send_telegram_message(text, emoji, otp_code):
     payload = {
         "chat_id": CHAT_ID,
         "text": text,
-        "parse_mode": "Markdown",
+        "parse_mode": "HTML",
         "reply_markup": json.dumps(inline_keyboard)
     }
 
@@ -157,7 +167,9 @@ def send_telegram_message(text, emoji, otp_code):
             msg_id = data["result"]["message_id"]
             threading.Thread(target=delete_message_later, args=(CHAT_ID, msg_id), daemon=True).start()
             return True
-        return False
+        else:
+            print("Telegram Error:", data)
+            return False
     except Exception as e:
         print("Telegram Error:", e)
         return False
@@ -170,30 +182,22 @@ def process_message(item, processed_ids):
     raw_number = str(item.get("number", "")).strip()
     msg_body = item.get("message", "") or ""
 
-    flag = get_country_flag(raw_number)
-    short_code, emoji = get_service_short(item, msg_body)
-    lang = detect_language(msg_body)
+    flag, country_code = get_country_info(raw_number)
+    service_emoji, service_short = get_service_info(item, msg_body)
+    masked = mask_number(raw_number)
 
     otp_match = re.search(r'\b\d{3}[-\s]?\d{3}\b|\b\d{4,8}\b', msg_body)
-    otp_code = otp_match.group(0) if otp_match else "N/A"
+    otp_code = otp_match.group(0).replace("-", "").replace(" ", "") if otp_match else "N/A"
 
-    # ===== Exact format you asked =====
-    header = f"{flag} {short_code} 📱 {raw_number}  native{lang}"
+    header = f"{flag} <b>{country_code}</b> | {service_emoji} <code>+{masked}</code>"
 
-    formatted_msg = (
-        f"{header}\n\n"
-        f"```{msg_body}```\n\n"
-        f"🔑 OTP : `{otp_code}`\n"
-        f"⏳ Auto delete after 3 minutes"
-    )
-
-    if send_telegram_message(formatted_msg, emoji, otp_code):
+    if send_telegram_message(header, otp_code):
         save_processed_id(msg_id)
-        print(f"✅ {header} | OTP: {otp_code}")
+        print(f"✅ {flag} {country_code} | {service_short} +{masked} → {otp_code}")
         return True
     return False
 
-def check_messages(first_run=False):
+def check_messages():
     try:
         params = {'per_page': 30}
         response = requests.get(url, headers=headers, params=params, timeout=12)
@@ -206,23 +210,28 @@ def check_messages(first_run=False):
         processed_ids = load_processed_ids()
         sent = 0
 
-        # first_run = True হলে সব পুরনো মেসেজ একসাথে পাঠাবে
         for item in messages:
             if process_message(item, processed_ids):
                 sent += 1
 
         if sent:
-            print(f"→ {sent} message(s) sent")
+            print(f"→ {sent} OTP sent")
 
     except Exception as e:
         print("API Error:", e)
 
 if __name__ == "__main__":
-    print("🚀 Final Bot Starting...")
-    print("→ Sending ALL old/pending messages first...")
-    check_messages(first_run=True)
+    print("🚀 Bot Starting...")
+    
+    # ← এই লাইনটাই মূল পরিবর্তন
+    # প্রতিবার বট স্টার্ট হলে পুরনো ID মুছে ফেলবে
+    # তাই old + new সব আবার পাঠাবে
+    clear_processed_ids()
 
-    print("→ Now watching new OTPs (max 4-10 sec delay)...")
+    print("→ Sending ALL current messages (old + new)...")
+    check_messages()
+
+    print("→ Now watching for new OTPs...")
     while True:
-        check_messages(first_run=False)
-        time.sleep(4)   # ৪ সেকেন্ডে একবার চেক (সর্বোচ্চ ১০ সেকেন্ডের মধ্যে আসবে)
+        check_messages()
+        time.sleep(4)
