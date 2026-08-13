@@ -20,6 +20,14 @@ headers = {
 PROCESSED_IDS_FILE = "processed_ids.txt"
 BD_TZ = timezone(timedelta(hours=6))
 
+# ========== Custom Premium Emoji IDs ==========
+# তুমি যে ID দিছো (পিক থেকে)
+CUSTOM_PHONE_EMOJI_ID = "5972209358606440253"   # 📱 এর কাস্টম প্রিমিয়াম ইমোজি
+
+# চাইলে পরে Telegram / WhatsApp এর জন্য আলাদা ID দিয়ে এখানে বসাবে
+CUSTOM_TG_EMOJI_ID = None      # উদাহরণ: "1234567890123456789"
+CUSTOM_WA_EMOJI_ID = None      # উদাহরণ: "9876543210987654321"
+
 def load_processed_ids():
     if os.path.exists(PROCESSED_IDS_FILE):
         with open(PROCESSED_IDS_FILE, "r") as f:
@@ -91,14 +99,21 @@ def get_service_short(item, message_text):
         elif "IMO" in text: name = "imo"
         elif "VIBER" in text: name = "viber"
 
-    if "telegram" in name: return "#TG", "✈️"
-    if "whatsapp" in name: return "#WA", "5972209358606440253"
-    if "1xbet" in name: return "#1X", "🎰"
-    if "google" in name: return "#GG", "🌐"
-    if "facebook" in name: return "#FB", "📘"
-    if "imo" in name: return "#IMO", "💜"
-    if "viber" in name: return "#VB", "📳"
-    return "#SV", "💬"
+    if "telegram" in name:
+        return "#TG", "✈️", CUSTOM_TG_EMOJI_ID
+    if "whatsapp" in name:
+        return "#WA", "💬", CUSTOM_WA_EMOJI_ID
+    if "1xbet" in name:
+        return "#1X", "🎰", None
+    if "google" in name:
+        return "#GG", "🌐", None
+    if "facebook" in name:
+        return "#FB", "📘", None
+    if "imo" in name:
+        return "#IMO", "💜", None
+    if "viber" in name:
+        return "#VB", "📳", None
+    return "#SV", "💬", None
 
 def detect_language(text):
     if re.search(r'[\u0600-\u06FF]', text): return "Arabic"
@@ -146,7 +161,7 @@ def send_telegram_message(text, emoji, otp_code):
     payload = {
         "chat_id": CHAT_ID,
         "text": text,
-        "parse_mode": "Markdown",
+        "parse_mode": "HTML",          # Custom emoji এর জন্য HTML লাগবে
         "reply_markup": json.dumps(inline_keyboard)
     }
 
@@ -157,7 +172,9 @@ def send_telegram_message(text, emoji, otp_code):
             msg_id = data["result"]["message_id"]
             threading.Thread(target=delete_message_later, args=(CHAT_ID, msg_id), daemon=True).start()
             return True
-        return False
+        else:
+            print("Telegram Error:", data)
+            return False
     except Exception as e:
         print("Telegram Error:", e)
         return False
@@ -171,29 +188,38 @@ def process_message(item, processed_ids):
     msg_body = item.get("message", "") or ""
 
     flag = get_country_flag(raw_number)
-    short_code, emoji = get_service_short(item, msg_body)
+    short_code, normal_emoji, custom_service_id = get_service_short(item, msg_body)
     lang = detect_language(msg_body)
 
     otp_match = re.search(r'\b\d{3}[-\s]?\d{3}\b|\b\d{4,8}\b', msg_body)
     otp_code = otp_match.group(0) if otp_match else "N/A"
 
-    # ===== Exact format you asked =====
-    header = f"{flag} {short_code} 📱 {raw_number}  native{lang}"
+    # ===== Custom Premium Phone Emoji =====
+    phone_emoji = f'<tg-emoji emoji-id="{CUSTOM_PHONE_EMOJI_ID}">📱</tg-emoji>'
+
+    # যদি service এর জন্য আলাদা custom emoji থাকে তাহলে সেটা ব্যবহার করবে
+    if custom_service_id:
+        service_part = f'<tg-emoji emoji-id="{custom_service_id}">{normal_emoji}</tg-emoji> {short_code}'
+    else:
+        service_part = f"{normal_emoji} {short_code}"
+
+    # Final header format (তোমার চাওয়া স্টাইল)
+    header = f"{flag} {service_part} {phone_emoji} {raw_number}  native{lang}"
 
     formatted_msg = (
         f"{header}\n\n"
-        f"```{msg_body}```\n\n"
-        f"🔑 OTP : `{otp_code}`\n"
+        f"<pre>{msg_body}</pre>\n\n"
+        f"🔑 OTP : <code>{otp_code}</code>\n"
         f"⏳ Auto delete after 3 minutes"
     )
 
-    if send_telegram_message(formatted_msg, emoji, otp_code):
+    if send_telegram_message(formatted_msg, normal_emoji, otp_code):
         save_processed_id(msg_id)
-        print(f"✅ {header} | OTP: {otp_code}")
+        print(f"✅ {flag} {short_code} {raw_number} | OTP: {otp_code}")
         return True
     return False
 
-def check_messages(first_run=False):
+def check_messages():
     try:
         params = {'per_page': 30}
         response = requests.get(url, headers=headers, params=params, timeout=12)
@@ -206,7 +232,6 @@ def check_messages(first_run=False):
         processed_ids = load_processed_ids()
         sent = 0
 
-        # first_run = True হলে সব পুরনো মেসেজ একসাথে পাঠাবে
         for item in messages:
             if process_message(item, processed_ids):
                 sent += 1
@@ -218,11 +243,11 @@ def check_messages(first_run=False):
         print("API Error:", e)
 
 if __name__ == "__main__":
-    print("🚀 Final Bot Starting...")
-    print("→ Sending ALL old/pending messages first...")
-    check_messages(first_run=True)
+    print("🚀 Final Bot with Custom Premium Emoji Starting...")
+    print("→ Sending ALL old messages first...")
+    check_messages()
 
-    print("→ Now watching new OTPs (max 4-10 sec delay)...")
+    print("→ Watching new OTPs (4-10 sec max delay)...")
     while True:
-        check_messages(first_run=False)
-        time.sleep(4)   # ৪ সেকেন্ডে একবার চেক (সর্বোচ্চ ১০ সেকেন্ডের মধ্যে আসবে)
+        check_messages()
+        time.sleep(4)
