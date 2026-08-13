@@ -4,10 +4,9 @@ import re
 import json
 import time
 import threading
-from datetime import datetime, timezone, timedelta
 
-api_key = os.environ["API_KEY"]
-BOT_TOKEN = os.environ["BOT_TOKEN"]
+api_key = os.environ.get("API_KEY")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = "-1004469160922"
 
 url = "https://redxsms.com/api/v1/iprn/messages"
@@ -30,7 +29,6 @@ def save_processed_id(msg_id):
         f.write(str(msg_id) + "\n")
 
 def get_country_info(number):
-    # flag + short country code
     data = {
         "93": ("🇦🇫", "AF"), "355": ("🇦🇱", "AL"), "213": ("🇩🇿", "DZ"), "376": ("🇦🇩", "AD"),
         "244": ("🇦🇴", "AO"), "54": ("🇦🇷", "AR"), "374": ("🇦🇲", "AM"), "61": ("🇦🇺", "AU"),
@@ -81,15 +79,13 @@ def get_country_info(number):
     return ("🌐", "UN")
 
 def mask_number(number):
-    """+47••••5886 স্টাইলে মাস্ক করে"""
     if len(number) <= 8:
         return number
-    # দেশের কোড + •••• + শেষ ৪ ডিজিট
-    if number.startswith("1") and len(number) == 11:  # US/CA
+    if number.startswith("47"):
+        return number[:2] + "••••" + number[-4:]
+    if number.startswith("1") and len(number) >= 10:
         return number[:1] + "••••" + number[-4:]
-    if len(number) >= 10:
-        return number[:2] + "••••" + number[-4:] if not number.startswith("47") else number[:2] + "••••" + number[-4:]
-    return number[:3] + "••••" + number[-3:]
+    return number[:2] + "••••" + number[-4:]
 
 def get_service_info(item, message_text):
     name = ""
@@ -104,7 +100,7 @@ def get_service_info(item, message_text):
     if not name:
         if "TELEGRAM" in text: name = "telegram"
         elif "WHATSAPP" in text: name = "whatsapp"
-        elif "TIKTOK" in text or "TIK TOK" in text: name = "tiktok"
+        elif "TIKTOK" in text: name = "tiktok"
         elif "1XBET" in text: name = "1xbet"
         elif "GOOGLE" in text: name = "google"
         elif "FACEBOOK" in text: name = "facebook"
@@ -112,24 +108,15 @@ def get_service_info(item, message_text):
         elif "VIBER" in text: name = "viber"
         elif "INSTAGRAM" in text: name = "instagram"
 
-    if "telegram" in name:
-        return "✈️", "TG"
-    if "whatsapp" in name:
-        return "💬", "WA"
-    if "tiktok" in name:
-        return "🎵", "TT"
-    if "1xbet" in name:
-        return "🎰", "1X"
-    if "google" in name:
-        return "🌐", "GG"
-    if "facebook" in name:
-        return "📘", "FB"
-    if "instagram" in name:
-        return "📸", "IG"
-    if "imo" in name:
-        return "💜", "IMO"
-    if "viber" in name:
-        return "📳", "VB"
+    if "telegram" in name: return "✈️", "TG"
+    if "whatsapp" in name: return "💬", "WA"
+    if "tiktok" in name: return "🎵", "TT"
+    if "1xbet" in name: return "🎰", "1X"
+    if "google" in name: return "🌐", "GG"
+    if "facebook" in name: return "📘", "FB"
+    if "instagram" in name: return "📸", "IG"
+    if "imo" in name: return "💜", "IMO"
+    if "viber" in name: return "📳", "VB"
     return "💬", "SV"
 
 def delete_message_later(chat_id, message_id):
@@ -172,17 +159,19 @@ def send_telegram_message(text, otp_code):
     }
 
     try:
-        resp = requests.post(tg_url, json=payload, timeout=12)
+        resp = requests.post(tg_url, json=payload, timeout=15)
         data = resp.json()
+        print("Telegram Response:", data)
+
         if data.get("ok"):
             msg_id = data["result"]["message_id"]
             threading.Thread(target=delete_message_later, args=(CHAT_ID, msg_id), daemon=True).start()
             return True
         else:
-            print("Telegram Error:", data)
+            print("❌ Telegram rejected the message")
             return False
     except Exception as e:
-        print("Telegram Error:", e)
+        print("Telegram Exception:", e)
         return False
 
 def process_message(item, processed_ids):
@@ -200,47 +189,58 @@ def process_message(item, processed_ids):
     otp_match = re.search(r'\b\d{3}[-\s]?\d{3}\b|\b\d{4,8}\b', msg_body)
     otp_code = otp_match.group(0).replace("-", "").replace(" ", "") if otp_match else "N/A"
 
-    # ===== IMS Panel স্টাইল =====
-    # উদাহরণ: 🇳🇴 NO | 🎵 +47••••5886
     header = f"{flag} <b>{country_code}</b> | {service_emoji} <code>+{masked}</code>"
 
-    formatted_msg = f"{header}"
-
-    if send_telegram_message(formatted_msg, otp_code):
+    if send_telegram_message(header, otp_code):
         save_processed_id(msg_id)
-        print(f"✅ {flag} {country_code} | {service_short} +{masked} → {otp_code}")
+        print(f"✅ SENT → {flag} {country_code} | {service_short} +{masked} | OTP: {otp_code}")
         return True
     return False
 
 def check_messages():
     try:
-        params = {'per_page': 25}
-        response = requests.get(url, headers=headers, params=params, timeout=12)
+        print("\n----- Checking API -----")
+        if not api_key:
+            print("❌ API_KEY not found in environment!")
+            return
+        if not BOT_TOKEN:
+            print("❌ BOT_TOKEN not found in environment!")
+            return
+
+        params = {'per_page': 20}
+        response = requests.get(url, headers=headers, params=params, timeout=15)
+        print("API Status:", response.status_code)
+
         result = response.json()
         messages = result.get("data", [])
+        print(f"Messages found: {len(messages)}")
 
         if not messages:
+            print("No messages in panel.")
             return
 
         processed_ids = load_processed_ids()
-        sent = 0
+        print(f"Already processed: {len(processed_ids)}")
 
+        sent = 0
         for item in messages:
             if process_message(item, processed_ids):
                 sent += 1
 
-        if sent:
-            print(f"→ {sent} OTP sent")
+        if sent == 0:
+            print("→ No new OTP to send")
+        else:
+            print(f"→ Successfully sent {sent} OTP(s)")
 
     except Exception as e:
         print("API Error:", e)
 
 if __name__ == "__main__":
-    print("🚀 IMS Style Bot Started...")
-    print("→ First sending all pending messages...")
-    check_messages()
+    print("🚀 Bot Started...")
+    print(f"CHAT_ID: {CHAT_ID}")
+    print(f"API_KEY exists: {bool(api_key)}")
+    print(f"BOT_TOKEN exists: {bool(BOT_TOKEN)}")
 
-    print("→ Now live (every 4 sec)...")
     while True:
         check_messages()
-        time.sleep(4)
+        time.sleep(5)
