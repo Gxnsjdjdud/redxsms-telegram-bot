@@ -16,7 +16,7 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 
 CHAT_ID = "-1004469160922"
 
-REDX_URL = "https://redxsms.com/api/v1/iprn/messages"
+REDX_URL = "https://redxsms.com/api/v1/iprn"
 
 REDX_HEADERS = {
     "Authorization": f"Bearer {API_KEY}",
