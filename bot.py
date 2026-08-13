@@ -20,13 +20,8 @@ headers = {
 PROCESSED_IDS_FILE = "processed_ids.txt"
 BD_TZ = timezone(timedelta(hours=6))
 
-# ========== Custom Premium Emoji IDs ==========
-# তুমি যে ID দিছো (পিক থেকে)
-CUSTOM_PHONE_EMOJI_ID = "5972209358606440253"   # 📱 এর কাস্টম প্রিমিয়াম ইমোজি
-
-# চাইলে পরে Telegram / WhatsApp এর জন্য আলাদা ID দিয়ে এখানে বসাবে
-CUSTOM_TG_EMOJI_ID = None      # উদাহরণ: "1234567890123456789"
-CUSTOM_WA_EMOJI_ID = None      # উদাহরণ: "9876543210987654321"
+# Custom Emoji ID (পিক থেকে)
+CUSTOM_PHONE_EMOJI_ID = "5972209358606440253"
 
 def load_processed_ids():
     if os.path.exists(PROCESSED_IDS_FILE):
@@ -90,7 +85,7 @@ def get_service_short(item, message_text):
                 break
 
     if not name:
-        text = message_text.upper()
+        text = (message_text or "").upper()
         if "TELEGRAM" in text: name = "telegram"
         elif "WHATSAPP" in text: name = "whatsapp"
         elif "1XBET" in text: name = "1xbet"
@@ -99,23 +94,17 @@ def get_service_short(item, message_text):
         elif "IMO" in text: name = "imo"
         elif "VIBER" in text: name = "viber"
 
-    if "telegram" in name:
-        return "#TG", "✈️", CUSTOM_TG_EMOJI_ID
-    if "whatsapp" in name:
-        return "#WA", "💬", CUSTOM_WA_EMOJI_ID
-    if "1xbet" in name:
-        return "#1X", "🎰", None
-    if "google" in name:
-        return "#GG", "🌐", None
-    if "facebook" in name:
-        return "#FB", "📘", None
-    if "imo" in name:
-        return "#IMO", "💜", None
-    if "viber" in name:
-        return "#VB", "📳", None
-    return "#SV", "💬", None
+    if "telegram" in name: return "#TG", "✈️"
+    if "whatsapp" in name: return "#WA", "💬"
+    if "1xbet" in name: return "#1X", "🎰"
+    if "google" in name: return "#GG", "🌐"
+    if "facebook" in name: return "#FB", "📘"
+    if "imo" in name: return "#IMO", "💜"
+    if "viber" in name: return "#VB", "📳"
+    return "#SV", "💬"
 
 def detect_language(text):
+    text = text or ""
     if re.search(r'[\u0600-\u06FF]', text): return "Arabic"
     if re.search(r'[\u4e00-\u9fff]', text): return "Chinese"
     if re.search(r'[\u0400-\u04FF]', text): return "Russian"
@@ -161,22 +150,24 @@ def send_telegram_message(text, emoji, otp_code):
     payload = {
         "chat_id": CHAT_ID,
         "text": text,
-        "parse_mode": "HTML",          # Custom emoji এর জন্য HTML লাগবে
+        "parse_mode": "HTML",
         "reply_markup": json.dumps(inline_keyboard)
     }
 
     try:
-        resp = requests.post(tg_url, json=payload, timeout=12)
+        resp = requests.post(tg_url, json=payload, timeout=15)
         data = resp.json()
+        print("Telegram Response:", data)  # ← এটা দেখবে এরর আছে কিনা
+
         if data.get("ok"):
             msg_id = data["result"]["message_id"]
             threading.Thread(target=delete_message_later, args=(CHAT_ID, msg_id), daemon=True).start()
             return True
         else:
-            print("Telegram Error:", data)
+            print("❌ Telegram Rejected the message!")
             return False
     except Exception as e:
-        print("Telegram Error:", e)
+        print("Telegram Exception:", e)
         return False
 
 def process_message(item, processed_ids):
@@ -188,23 +179,16 @@ def process_message(item, processed_ids):
     msg_body = item.get("message", "") or ""
 
     flag = get_country_flag(raw_number)
-    short_code, normal_emoji, custom_service_id = get_service_short(item, msg_body)
+    short_code, emoji = get_service_short(item, msg_body)
     lang = detect_language(msg_body)
 
     otp_match = re.search(r'\b\d{3}[-\s]?\d{3}\b|\b\d{4,8}\b', msg_body)
     otp_code = otp_match.group(0) if otp_match else "N/A"
 
-    # ===== Custom Premium Phone Emoji =====
+    # Custom Premium Emoji
     phone_emoji = f'<tg-emoji emoji-id="{CUSTOM_PHONE_EMOJI_ID}">📱</tg-emoji>'
 
-    # যদি service এর জন্য আলাদা custom emoji থাকে তাহলে সেটা ব্যবহার করবে
-    if custom_service_id:
-        service_part = f'<tg-emoji emoji-id="{custom_service_id}">{normal_emoji}</tg-emoji> {short_code}'
-    else:
-        service_part = f"{normal_emoji} {short_code}"
-
-    # Final header format (তোমার চাওয়া স্টাইল)
-    header = f"{flag} {service_part} {phone_emoji} {raw_number}  native{lang}"
+    header = f"{flag} {emoji} {short_code} {phone_emoji} {raw_number}  native{lang}"
 
     formatted_msg = (
         f"{header}\n\n"
@@ -213,20 +197,25 @@ def process_message(item, processed_ids):
         f"⏳ Auto delete after 3 minutes"
     )
 
-    if send_telegram_message(formatted_msg, normal_emoji, otp_code):
+    if send_telegram_message(formatted_msg, emoji, otp_code):
         save_processed_id(msg_id)
-        print(f"✅ {flag} {short_code} {raw_number} | OTP: {otp_code}")
+        print(f"✅ SENT → {flag} {short_code} {raw_number} | {otp_code}")
         return True
     return False
 
 def check_messages():
     try:
-        params = {'per_page': 30}
-        response = requests.get(url, headers=headers, params=params, timeout=12)
+        print("Checking API...")
+        params = {'per_page': 20}
+        response = requests.get(url, headers=headers, params=params, timeout=15)
+        print("API Status Code:", response.status_code)
+
         result = response.json()
         messages = result.get("data", [])
+        print(f"Total messages received from API: {len(messages)}")
 
         if not messages:
+            print("No messages in panel right now.")
             return
 
         processed_ids = load_processed_ids()
@@ -236,18 +225,18 @@ def check_messages():
             if process_message(item, processed_ids):
                 sent += 1
 
-        if sent:
-            print(f"→ {sent} message(s) sent")
+        if sent == 0:
+            print("No new messages to send (all already processed).")
+        else:
+            print(f"→ Successfully sent {sent} message(s)")
 
     except Exception as e:
         print("API Error:", e)
 
 if __name__ == "__main__":
-    print("🚀 Final Bot with Custom Premium Emoji Starting...")
-    print("→ Sending ALL old messages first...")
-    check_messages()
+    print("🚀 Bot Starting...")
+    print("⚠️  যদি আগে processed_ids.txt থাকে তাহলে ডিলিট করে দাও\n")
 
-    print("→ Watching new OTPs (4-10 sec max delay)...")
     while True:
         check_messages()
-        time.sleep(4)
+        time.sleep(5)
