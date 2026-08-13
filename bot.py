@@ -1,144 +1,314 @@
 import os
-import requests
 import re
 import json
 import time
 import threading
-from datetime import datetime, timezone, timedelta
+import requests
 
-api_key = os.environ["API_KEY"]
+from datetime import timezone, timedelta
+
+
+# =========================================================
+# ENVIRONMENT VARIABLES
+# =========================================================
+
+API_KEY = os.environ["API_KEY"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
+
 CHAT_ID = "-1004469160922"
 
-url = "https://redxsms.com/api/v1/iprn/messages"
 
-headers = {
-    "Authorization": f"Bearer {api_key}",
-    "Accept": "application/json"
+# =========================================================
+# REDX SMS API
+# =========================================================
+
+REDX_URL = "https://redxsms.com/api/v1/iprn/messages"
+
+REDX_HEADERS = {
+    "Authorization": f"Bearer {API_KEY}",
+    "Accept": "application/json",
 }
 
+
+# =========================================================
+# SETTINGS
+# =========================================================
+
 PROCESSED_IDS_FILE = "processed_ids.txt"
+
+CHECK_INTERVAL = 4
+DELETE_AFTER = 180
+
 BD_TZ = timezone(timedelta(hours=6))
 
-def load_processed_ids():
-    if os.path.exists(PROCESSED_IDS_FILE):
-        with open(PROCESSED_IDS_FILE, "r") as f:
-            return set(line.strip() for line in f if line.strip())
-    return set()
 
-def save_processed_id(msg_id):
-    with open(PROCESSED_IDS_FILE, "a") as f:
-        f.write(str(msg_id) + "\n")
+# =========================================================
+# PROCESSED MESSAGE IDS
+# =========================================================
+
+def load_processed_ids():
+    try:
+        if not os.path.exists(PROCESSED_IDS_FILE):
+            return set()
+
+        with open(PROCESSED_IDS_FILE, "r", encoding="utf-8") as f:
+            return {
+                line.strip()
+                for line in f
+                if line.strip()
+            }
+
+    except Exception as e:
+        print("❌ Failed loading processed IDs:", repr(e))
+        return set()
+
+
+def save_processed_id(message_id):
+    try:
+        with open(
+            PROCESSED_IDS_FILE,
+            "a",
+            encoding="utf-8"
+        ) as f:
+            f.write(str(message_id) + "\n")
+
+    except Exception as e:
+        print("❌ Failed saving processed ID:", repr(e))
+
+
+# =========================================================
+# COUNTRY FLAG
+# =========================================================
 
 def get_country_flag(number):
-    country_flags = {
-        "93": "🇦🇫", "355": "🇦🇱", "213": "🇩🇿", "376": "🇦🇩", "244": "🇦🇴",
-        "54": "🇦🇷", "374": "🇦🇲", "61": "🇦🇺", "43": "🇦🇹", "994": "🇦🇿",
-        "973": "🇧🇭", "880": "🇧🇩", "375": "🇧🇾", "32": "🇧🇪", "501": "🇧🇿",
-        "229": "🇧🇯", "975": "🇧🇹", "591": "🇧🇴", "387": "🇧🇦", "267": "🇧🇼",
-        "55": "🇧🇷", "673": "🇧🇳", "359": "🇧🇬", "226": "🇧🇫", "257": "🇧🇮",
-        "855": "🇰🇭", "237": "🇨🇲", "1": "🇺🇸", "238": "🇨🇻", "236": "🇨🇫",
-        "235": "🇹🇩", "56": "🇨🇱", "86": "🇨🇳", "57": "🇨🇴", "269": "🇰🇲",
-        "242": "🇨🇬", "243": "🇨🇩", "506": "🇨🇷", "385": "🇭🇷", "53": "🇨🇺",
-        "357": "🇨🇾", "420": "🇨🇿", "45": "🇩🇰", "253": "🇩🇯", "1767": "🇩🇲",
-        "1809": "🇩🇴", "593": "🇪🇨", "20": "🇪🇬", "503": "🇸🇻", "240": "🇬🇶",
-        "291": "🇪🇷", "372": "🇪🇪", "251": "🇪🇹", "679": "🇫🇯", "358": "🇫🇮",
-        "33": "🇫🇷", "241": "🇬🇦", "220": "🇬🇲", "995": "🇬🇪", "49": "🇩🇪",
-        "233": "🇬🇭", "30": "🇬🇷", "502": "🇬🇹", "224": "🇬🇳", "245": "🇬🇼",
-        "592": "🇬🇾", "509": "🇭🇹", "504": "🇭🇳", "36": "🇭🇺", "354": "🇮🇸",
-        "91": "🇮🇳", "62": "🇮🇩", "98": "🇮🇷", "964": "🇮🇶", "353": "🇮🇪",
-        "972": "🇮🇱", "39": "🇮🇹", "1876": "🇯🇲", "81": "🇯🇵", "962": "🇯🇴",
-        "7": "🇷🇺", "254": "🇰🇪", "965": "🇰🇼", "996": "🇰🇬", "856": "🇱🇦",
-        "371": "🇱🇻", "961": "🇱🇧", "266": "🇱🇸", "231": "🇱🇷", "218": "🇱🇾",
-        "423": "🇱🇮", "370": "🇱🇹", "352": "🇱🇺", "261": "🇲🇬", "265": "🇲🇼",
-        "60": "🇲🇾", "960": "🇲🇻", "223": "🇲🇱", "356": "🇲🇹", "52": "🇲🇽",
-        "373": "🇲🇩", "377": "🇲🇨", "976": "🇲🇳", "382": "🇲🇪", "212": "🇲🇦",
-        "258": "🇲🇿", "95": "🇲🇲", "264": "🇳🇦", "977": "🇳🇵", "31": "🇳🇱",
-        "64": "🇳🇿", "505": "🇳🇮", "227": "🇳🇪", "234": "🇳🇬", "47": "🇳🇴",
-        "968": "🇴🇲", "92": "🇵🇰", "970": "🇵🇸", "507": "🇵🇦", "675": "🇵🇬",
-        "595": "🇵🇾", "51": "🇵🇪", "63": "🇵🇭", "48": "🇵🇱", "351": "🇵🇹",
-        "974": "🇶🇦", "40": "🇷🇴", "250": "🇷🇼", "966": "🇸🇦", "221": "🇸🇳",
-        "381": "🇷🇸", "248": "🇸🇨", "232": "🇸🇱", "65": "🇸🇬", "421": "🇸🇰",
-        "386": "🇸🇮", "252": "🇸🇴", "27": "🇿🇦", "82": "🇰🇷", "34": "🇪🇸",
-        "94": "🇱🇰", "249": "🇸🇩", "597": "🇸🇷", "46": "🇸🇪", "41": "🇨🇭",
-        "963": "🇸🇾", "886": "🇹🇼", "992": "🇹🇯", "255": "🇹🇿", "66": "🇹🇭",
-        "228": "🇹🇬", "676": "🇹🇴", "216": "🇹🇳", "90": "🇹🇷", "993": "🇹🇲",
-        "256": "🇺🇬", "380": "🇺🇦", "971": "🇦🇪", "44": "🇬🇧", "598": "🇺🇾",
-        "998": "🇺🇿", "58": "🇻🇪", "84": "🇻🇳", "967": "🇾🇪", "260": "🇿🇲",
-        "263": "🇿🇼"
+
+    flags = {
+        "880": "🇧🇩",
+        "91": "🇮🇳",
+        "92": "🇵🇰",
+        "1": "🇺🇸",
+        "44": "🇬🇧",
+        "971": "🇦🇪",
+        "966": "🇸🇦",
+        "60": "🇲🇾",
+        "65": "🇸🇬",
+        "62": "🇮🇩",
+        "63": "🇵🇭",
+        "66": "🇹🇭",
+        "81": "🇯🇵",
+        "82": "🇰🇷",
+        "86": "🇨🇳",
+        "90": "🇹🇷",
+        "49": "🇩🇪",
+        "33": "🇫🇷",
+        "39": "🇮🇹",
+        "34": "🇪🇸",
+        "31": "🇳🇱",
+        "61": "🇦🇺",
+        "55": "🇧🇷",
+        "7": "🇷🇺",
+        "98": "🇮🇷",
+        "964": "🇮🇶",
+        "20": "🇪🇬",
+        "27": "🇿🇦",
+        "234": "🇳🇬",
+        "254": "🇰🇪",
+        "977": "🇳🇵",
+        "94": "🇱🇰",
+        "84": "🇻🇳",
+        "93": "🇦🇫",
+        "212": "🇲🇦",
+        "216": "🇹🇳",
+        "972": "🇮🇱",
+        "974": "🇶🇦",
+        "973": "🇧🇭",
+        "968": "🇴🇲",
+        "965": "🇰🇼",
+        "962": "🇯🇴",
+        "32": "🇧🇪",
+        "41": "🇨🇭",
+        "43": "🇦🇹",
+        "45": "🇩🇰",
+        "46": "🇸🇪",
+        "47": "🇳🇴",
+        "48": "🇵🇱",
+        "351": "🇵🇹",
+        "358": "🇫🇮",
+        "30": "🇬🇷",
+        "36": "🇭🇺",
+        "40": "🇷🇴",
+        "420": "🇨🇿",
+        "421": "🇸🇰",
+        "380": "🇺🇦",
     }
-    for code in sorted(country_flags.keys(), key=len, reverse=True):
+
+    number = re.sub(r"\D", "", number)
+
+    for code in sorted(flags, key=len, reverse=True):
         if number.startswith(code):
-            return country_flags[code]
+            return flags[code]
+
     return "🌐"
 
-def get_service_short(item, message_text):
-    name = ""
-    for key in ['service', 'app', 'service_name', 'name', 'title', 'gateway']:
-        if key in item and item[key]:
-            val = str(item[key]).strip().lower()
-            if val and val != "none":
-                name = val
+
+# =========================================================
+# SERVICE DETECTION
+# =========================================================
+
+def get_service(item, message):
+
+    possible_fields = [
+        "service",
+        "app",
+        "service_name",
+        "name",
+        "title",
+        "gateway",
+    ]
+
+    service = ""
+
+    for key in possible_fields:
+
+        value = item.get(key)
+
+        if value:
+            value = str(value).strip().lower()
+
+            if value and value != "none":
+                service = value
                 break
 
-    if not name:
-        text = message_text.upper()
-        if "TELEGRAM" in text: name = "telegram"
-        elif "WHATSAPP" in text: name = "whatsapp"
-        elif "1XBET" in text: name = "1xbet"
-        elif "GOOGLE" in text: name = "google"
-        elif "FACEBOOK" in text: name = "facebook"
-        elif "IMO" in text: name = "imo"
-        elif "VIBER" in text: name = "viber"
+    if not service:
 
-    if "telegram" in name: return "#TG", "✈️"
-    if "whatsapp" in name: return "#WA", "💬"
-    if "1xbet" in name: return "#1X", "🎰"
-    if "google" in name: return "#GG", "🌐"
-    if "facebook" in name: return "#FB", "📘"
-    if "imo" in name: return "#IMO", "💜"
-    if "viber" in name: return "#VB", "📳"
-    return "#SV", "💬"
+        text = message.upper()
 
-def detect_language(text):
-    if re.search(r'[\u0600-\u06FF]', text): return "Arabic"
-    if re.search(r'[\u4e00-\u9fff]', text): return "Chinese"
-    if re.search(r'[\u0400-\u04FF]', text): return "Russian"
-    if re.search(r'[\u0980-\u09FF]', text): return "Bengali"
-    if re.search(r'[\u0e00-\u0e7f]', text): return "Thai"
-    if re.search(r'[\u0900-\u097f]', text): return "Hindi"
-    if re.search(r'[\u3040-\u309f\u30a0-\u30ff]', text): return "Japanese"
-    if re.search(r'[\uac00-\ud7af]', text): return "Korean"
-    return "English"
+        services = {
+            "TELEGRAM": "telegram",
+            "WHATSAPP": "whatsapp",
+            "GOOGLE": "google",
+            "FACEBOOK": "facebook",
+            "IMO": "imo",
+            "VIBER": "viber",
+        }
+
+        for keyword, name in services.items():
+
+            if keyword in text:
+                service = name
+                break
+
+    service_map = {
+        "telegram": ("#TG", "✈️"),
+        "whatsapp": ("#WA", "💬"),
+        "google": ("#GG", "🌐"),
+        "facebook": ("#FB", "📘"),
+        "imo": ("#IMO", "💜"),
+        "viber": ("#VB", "📳"),
+    }
+
+    return service_map.get(
+        service,
+        ("#SMS", "💬")
+    )
+
+
+# =========================================================
+# MASK SENSITIVE NUMERIC CODES
+# =========================================================
+
+def mask_sensitive_codes(text):
+
+    if not text:
+        return ""
+
+    # Mask 4-8 digit verification-like sequences.
+    # Example: 123456 -> ******
+
+    def replace_code(match):
+        value = match.group(0)
+        return "*" * len(value)
+
+    text = re.sub(
+        r"\b\d{4,8}\b",
+        replace_code,
+        text
+    )
+
+    # Mask 3-3 patterns such as 123-456
+
+    text = re.sub(
+        r"\b\d{3}[-\s]\d{3}\b",
+        lambda m: "******",
+        text
+    )
+
+    return text
+
+
+# =========================================================
+# DELETE TELEGRAM MESSAGE
+# =========================================================
 
 def delete_message_later(chat_id, message_id):
-    time.sleep(180)
+
+    time.sleep(DELETE_AFTER)
+
     try:
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage",
-                      json={"chat_id": chat_id, "message_id": message_id}, timeout=10)
-    except:
-        pass
 
-def send_telegram_message(text, emoji, otp_code):
-    tg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        url = (
+            f"https://api.telegram.org/"
+            f"bot{BOT_TOKEN}/deleteMessage"
+        )
 
-    inline_keyboard = {
+        response = requests.post(
+            url,
+            json={
+                "chat_id": chat_id,
+                "message_id": message_id,
+            },
+            timeout=10,
+        )
+
+        print(
+            "🗑 Delete status:",
+            response.status_code,
+            response.text
+        )
+
+    except Exception as e:
+
+        print(
+            "❌ Delete error:",
+            repr(e)
+        )
+
+
+# =========================================================
+# SEND TELEGRAM NOTIFICATION
+# =========================================================
+
+def send_telegram_message(
+    text,
+    emoji
+):
+
+    telegram_url = (
+        f"https://api.telegram.org/"
+        f"bot{BOT_TOKEN}/sendMessage"
+    )
+
+    keyboard = {
         "inline_keyboard": [
             [
                 {
-                    "text": f"{emoji} 📋 Copy OTP",
-                    "copy_text": {"text": otp_code}
-                }
-            ],
-            [
-                {
                     "text": "📞 Get Number",
-                    "url": "https://t.me/Heueururuhhd_bot"
+                    "url": "https://t.me/Heueururuhhd_bot",
                 },
                 {
                     "text": "📢 Main Channel",
-                    "url": "https://t.me/Global_Method_Channel"
-                }
+                    "url": "https://t.me/Global_Method_Channel",
+                },
             ]
         ]
     }
@@ -146,83 +316,310 @@ def send_telegram_message(text, emoji, otp_code):
     payload = {
         "chat_id": CHAT_ID,
         "text": text,
-        "parse_mode": "Markdown",
-        "reply_markup": json.dumps(inline_keyboard)
+        "reply_markup": keyboard,
     }
 
     try:
-        resp = requests.post(tg_url, json=payload, timeout=12)
-        data = resp.json()
-        if data.get("ok"):
-            msg_id = data["result"]["message_id"]
-            threading.Thread(target=delete_message_later, args=(CHAT_ID, msg_id), daemon=True).start()
-            return True
-        return False
+
+        response = requests.post(
+            telegram_url,
+            json=payload,
+            timeout=15,
+        )
+
+        print(
+            "📨 Telegram Status:",
+            response.status_code
+        )
+
+        print(
+            "📨 Telegram Response:",
+            response.text
+        )
+
+        data = response.json()
+
+        if not data.get("ok"):
+
+            print(
+                "❌ Telegram rejected message:",
+                data
+            )
+
+            return False
+
+        message_id = (
+            data["result"]["message_id"]
+        )
+
+        print(
+            "✅ Telegram message sent:",
+            message_id
+        )
+
+        threading.Thread(
+            target=delete_message_later,
+            args=(
+                CHAT_ID,
+                message_id,
+            ),
+            daemon=True,
+        ).start()
+
+        return True
+
     except Exception as e:
-        print("Telegram Error:", e)
+
+        print(
+            "❌ Telegram Error:",
+            repr(e)
+        )
+
         return False
 
-def process_message(item, processed_ids):
-    msg_id = str(item.get("id", item.get("received_at", "")))
-    if not msg_id or msg_id in processed_ids:
+
+# =========================================================
+# PROCESS REDX MESSAGE
+# =========================================================
+
+def process_message(
+    item,
+    processed_ids
+):
+
+    message_id = str(
+        item.get(
+            "id",
+            item.get(
+                "received_at",
+                ""
+            )
+        )
+    ).strip()
+
+    if not message_id:
+        print("⚠️ Message has no ID")
         return False
 
-    raw_number = str(item.get("number", "")).strip()
-    msg_body = item.get("message", "") or ""
+    if message_id in processed_ids:
 
-    flag = get_country_flag(raw_number)
-    short_code, emoji = get_service_short(item, msg_body)
-    lang = detect_language(msg_body)
+        print(
+            "⏭ Already processed:",
+            message_id
+        )
 
-    otp_match = re.search(r'\b\d{3}[-\s]?\d{3}\b|\b\d{4,8}\b', msg_body)
-    otp_code = otp_match.group(0) if otp_match else "N/A"
+        return False
 
-    # ===== Exact format you asked =====
-    header = f"{flag} {short_code} 📱 {raw_number}  native{lang}"
+    number = str(
+        item.get(
+            "number",
+            ""
+        )
+    ).strip()
 
-    formatted_msg = (
-        f"{header}\n\n"
-        f"```{msg_body}```\n\n"
-        f"🔑 OTP : `{otp_code}`\n"
+    message = str(
+        item.get(
+            "message",
+            ""
+        ) or ""
+    )
+
+    flag = get_country_flag(number)
+
+    service_code, emoji = get_service(
+        item,
+        message
+    )
+
+    safe_message = mask_sensitive_codes(
+        message
+    )
+
+    # Mask phone number except last 4 digits
+
+    if len(number) > 4:
+
+        masked_number = (
+            "*" * (len(number) - 4)
+            + number[-4:]
+        )
+
+    else:
+
+        masked_number = "****"
+
+    text = (
+        f"{flag} {service_code} 📱 "
+        f"{masked_number}\n\n"
+        f"{safe_message}\n\n"
+        f"🔐 Verification code hidden\n"
         f"⏳ Auto delete after 3 minutes"
     )
 
-    if send_telegram_message(formatted_msg, emoji, otp_code):
-        save_processed_id(msg_id)
-        print(f"✅ {header} | OTP: {otp_code}")
+    if send_telegram_message(
+        text,
+        emoji
+    ):
+
+        save_processed_id(
+            message_id
+        )
+
+        processed_ids.add(
+            message_id
+        )
+
+        print(
+            "✅ Processed:",
+            message_id
+        )
+
         return True
+
+    print(
+        "❌ Failed to send:",
+        message_id
+    )
+
     return False
 
-def check_messages(first_run=False):
+
+# =========================================================
+# CHECK REDX MESSAGES
+# =========================================================
+
+def check_messages():
+
     try:
-        params = {'per_page': 30}
-        response = requests.get(url, headers=headers, params=params, timeout=12)
+
+        params = {
+            "per_page": 30
+        }
+
+        response = requests.get(
+            REDX_URL,
+            headers=REDX_HEADERS,
+            params=params,
+            timeout=15,
+        )
+
+        print(
+            "📡 RedX Status:",
+            response.status_code
+        )
+
+        print(
+            "📡 RedX Response:",
+            response.text[:1000]
+        )
+
+        if response.status_code != 200:
+
+            print(
+                "❌ RedX API returned:",
+                response.status_code
+            )
+
+            return
+
         result = response.json()
-        messages = result.get("data", [])
+
+        messages = result.get(
+            "data",
+            []
+        )
+
+        print(
+            f"📥 RedX messages received: "
+            f"{len(messages)}"
+        )
 
         if not messages:
             return
 
-        processed_ids = load_processed_ids()
+        processed_ids = (
+            load_processed_ids()
+        )
+
         sent = 0
 
-        # first_run = True হলে সব পুরনো মেসেজ একসাথে পাঠাবে
         for item in messages:
-            if process_message(item, processed_ids):
-                sent += 1
 
-        if sent:
-            print(f"→ {sent} message(s) sent")
+            try:
+
+                if process_message(
+                    item,
+                    processed_ids
+                ):
+                    sent += 1
+
+            except Exception as e:
+
+                print(
+                    "❌ Message processing error:",
+                    repr(e)
+                )
+
+        print(
+            f"📤 This cycle sent: {sent}"
+        )
+
+    except requests.RequestException as e:
+
+        print(
+            "❌ RedX connection error:",
+            repr(e)
+        )
+
+    except ValueError as e:
+
+        print(
+            "❌ RedX JSON error:",
+            repr(e)
+        )
 
     except Exception as e:
-        print("API Error:", e)
+
+        print(
+            "❌ Unexpected API error:",
+            repr(e)
+        )
+
+
+# =========================================================
+# MAIN
+# =========================================================
 
 if __name__ == "__main__":
-    print("🚀 Final Bot Starting...")
-    print("→ Sending ALL old/pending messages first...")
-    check_messages(first_run=True)
 
-    print("→ Now watching new OTPs (max 4-10 sec delay)...")
+    print("=" * 50)
+    print("🚀 RedX Telegram Notification Bot")
+    print("=" * 50)
+
+    print(
+        "→ Checking pending messages..."
+    )
+
+    check_messages()
+
+    print(
+        f"→ Watching RedX every "
+        f"{CHECK_INTERVAL} seconds..."
+    )
+
     while True:
-        check_messages(first_run=False)
-        time.sleep(4)   # ৪ সেকেন্ডে একবার চেক (সর্বোচ্চ ১০ সেকেন্ডের মধ্যে আসবে)
+
+        try:
+
+            check_messages()
+
+        except Exception as e:
+
+            print(
+                "❌ Main loop error:",
+                repr(e)
+            )
+
+        time.sleep(
+            CHECK_INTERVAL
+                   )
