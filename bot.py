@@ -20,9 +20,6 @@ headers = {
 PROCESSED_IDS_FILE = "processed_ids.txt"
 BD_TZ = timezone(timedelta(hours=6))
 
-# Custom Emoji ID (পিক থেকে)
-CUSTOM_PHONE_EMOJI_ID = "5972209358606440253"
-
 def load_processed_ids():
     if os.path.exists(PROCESSED_IDS_FILE):
         with open(PROCESSED_IDS_FILE, "r") as f:
@@ -85,7 +82,7 @@ def get_service_short(item, message_text):
                 break
 
     if not name:
-        text = (message_text or "").upper()
+        text = message_text.upper()
         if "TELEGRAM" in text: name = "telegram"
         elif "WHATSAPP" in text: name = "whatsapp"
         elif "1XBET" in text: name = "1xbet"
@@ -104,7 +101,6 @@ def get_service_short(item, message_text):
     return "#SV", "💬"
 
 def detect_language(text):
-    text = text or ""
     if re.search(r'[\u0600-\u06FF]', text): return "Arabic"
     if re.search(r'[\u4e00-\u9fff]', text): return "Chinese"
     if re.search(r'[\u0400-\u04FF]', text): return "Russian"
@@ -150,24 +146,20 @@ def send_telegram_message(text, emoji, otp_code):
     payload = {
         "chat_id": CHAT_ID,
         "text": text,
-        "parse_mode": "HTML",
+        "parse_mode": "Markdown",
         "reply_markup": json.dumps(inline_keyboard)
     }
 
     try:
-        resp = requests.post(tg_url, json=payload, timeout=15)
+        resp = requests.post(tg_url, json=payload, timeout=12)
         data = resp.json()
-        print("Telegram Response:", data)  # ← এটা দেখবে এরর আছে কিনা
-
         if data.get("ok"):
             msg_id = data["result"]["message_id"]
             threading.Thread(target=delete_message_later, args=(CHAT_ID, msg_id), daemon=True).start()
             return True
-        else:
-            print("❌ Telegram Rejected the message!")
-            return False
+        return False
     except Exception as e:
-        print("Telegram Exception:", e)
+        print("Telegram Error:", e)
         return False
 
 def process_message(item, processed_ids):
@@ -185,58 +177,52 @@ def process_message(item, processed_ids):
     otp_match = re.search(r'\b\d{3}[-\s]?\d{3}\b|\b\d{4,8}\b', msg_body)
     otp_code = otp_match.group(0) if otp_match else "N/A"
 
-    # Custom Premium Emoji
-    phone_emoji = f'<tg-emoji emoji-id="{CUSTOM_PHONE_EMOJI_ID}">📱</tg-emoji>'
-
-    header = f"{flag} {emoji} {short_code} {phone_emoji} {raw_number}  native{lang}"
+    # ===== Exact format you asked =====
+    header = f"{flag} {short_code} 📱 {raw_number}  native{lang}"
 
     formatted_msg = (
         f"{header}\n\n"
-        f"<pre>{msg_body}</pre>\n\n"
-        f"🔑 OTP : <code>{otp_code}</code>\n"
+        f"```{msg_body}```\n\n"
+        f"🔑 OTP : `{otp_code}`\n"
         f"⏳ Auto delete after 3 minutes"
     )
 
     if send_telegram_message(formatted_msg, emoji, otp_code):
         save_processed_id(msg_id)
-        print(f"✅ SENT → {flag} {short_code} {raw_number} | {otp_code}")
+        print(f"✅ {header} | OTP: {otp_code}")
         return True
     return False
 
-def check_messages():
+def check_messages(first_run=False):
     try:
-        print("Checking API...")
-        params = {'per_page': 20}
-        response = requests.get(url, headers=headers, params=params, timeout=15)
-        print("API Status Code:", response.status_code)
-
+        params = {'per_page': 30}
+        response = requests.get(url, headers=headers, params=params, timeout=12)
         result = response.json()
         messages = result.get("data", [])
-        print(f"Total messages received from API: {len(messages)}")
 
         if not messages:
-            print("No messages in panel right now.")
             return
 
         processed_ids = load_processed_ids()
         sent = 0
 
+        # first_run = True হলে সব পুরনো মেসেজ একসাথে পাঠাবে
         for item in messages:
             if process_message(item, processed_ids):
                 sent += 1
 
-        if sent == 0:
-            print("No new messages to send (all already processed).")
-        else:
-            print(f"→ Successfully sent {sent} message(s)")
+        if sent:
+            print(f"→ {sent} message(s) sent")
 
     except Exception as e:
         print("API Error:", e)
 
 if __name__ == "__main__":
-    print("🚀 Bot Starting...")
-    print("⚠️  যদি আগে processed_ids.txt থাকে তাহলে ডিলিট করে দাও\n")
+    print("🚀 Final Bot Starting...")
+    print("→ Sending ALL old/pending messages first...")
+    check_messages(first_run=True)
 
+    print("→ Now watching new OTPs (max 4-10 sec delay)...")
     while True:
-        check_messages()
-        time.sleep(5)
+        check_messages(first_run=False)
+        time.sleep(4)   # ৪ সেকেন্ডে একবার চেক (সর্বোচ্চ ১০ সেকেন্ডের মধ্যে আসবে)
