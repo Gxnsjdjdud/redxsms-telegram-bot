@@ -5,8 +5,8 @@ import json
 import time
 import threading
 
-api_key = os.environ.get("API_KEY")
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+api_key = os.environ["API_KEY"]
+BOT_TOKEN = os.environ["BOT_TOKEN"]
 CHAT_ID = "-1004469160922"
 
 url = "https://redxsms.com/api/v1/iprn/messages"
@@ -81,10 +81,7 @@ def get_country_info(number):
 def mask_number(number):
     if len(number) <= 8:
         return number
-    if number.startswith("47"):
-        return number[:2] + "••••" + number[-4:]
-    if number.startswith("1") and len(number) >= 10:
-        return number[:1] + "••••" + number[-4:]
+    # +47••••5886 স্টাইল
     return number[:2] + "••••" + number[-4:]
 
 def get_service_info(item, message_text):
@@ -159,19 +156,17 @@ def send_telegram_message(text, otp_code):
     }
 
     try:
-        resp = requests.post(tg_url, json=payload, timeout=15)
+        resp = requests.post(tg_url, json=payload, timeout=12)
         data = resp.json()
-        print("Telegram Response:", data)
-
         if data.get("ok"):
             msg_id = data["result"]["message_id"]
             threading.Thread(target=delete_message_later, args=(CHAT_ID, msg_id), daemon=True).start()
             return True
         else:
-            print("❌ Telegram rejected the message")
+            print("Telegram Error:", data)
             return False
     except Exception as e:
-        print("Telegram Exception:", e)
+        print("Telegram Error:", e)
         return False
 
 def process_message(item, processed_ids):
@@ -189,58 +184,40 @@ def process_message(item, processed_ids):
     otp_match = re.search(r'\b\d{3}[-\s]?\d{3}\b|\b\d{4,8}\b', msg_body)
     otp_code = otp_match.group(0).replace("-", "").replace(" ", "") if otp_match else "N/A"
 
+    # IMS Panel স্টাইল (পিকের মতো)
     header = f"{flag} <b>{country_code}</b> | {service_emoji} <code>+{masked}</code>"
 
     if send_telegram_message(header, otp_code):
         save_processed_id(msg_id)
-        print(f"✅ SENT → {flag} {country_code} | {service_short} +{masked} | OTP: {otp_code}")
+        print(f"✅ {flag} {country_code} | {service_short} +{masked} → {otp_code}")
         return True
     return False
 
 def check_messages():
     try:
-        print("\n----- Checking API -----")
-        if not api_key:
-            print("❌ API_KEY not found in environment!")
-            return
-        if not BOT_TOKEN:
-            print("❌ BOT_TOKEN not found in environment!")
-            return
-
-        params = {'per_page': 20}
-        response = requests.get(url, headers=headers, params=params, timeout=15)
-        print("API Status:", response.status_code)
-
+        params = {'per_page': 25}
+        response = requests.get(url, headers=headers, params=params, timeout=12)
         result = response.json()
         messages = result.get("data", [])
-        print(f"Messages found: {len(messages)}")
 
         if not messages:
-            print("No messages in panel.")
             return
 
         processed_ids = load_processed_ids()
-        print(f"Already processed: {len(processed_ids)}")
-
         sent = 0
+
         for item in messages:
             if process_message(item, processed_ids):
                 sent += 1
 
-        if sent == 0:
-            print("→ No new OTP to send")
-        else:
-            print(f"→ Successfully sent {sent} OTP(s)")
+        if sent:
+            print(f"→ {sent} OTP sent")
 
     except Exception as e:
         print("API Error:", e)
 
 if __name__ == "__main__":
-    print("🚀 Bot Started...")
-    print(f"CHAT_ID: {CHAT_ID}")
-    print(f"API_KEY exists: {bool(api_key)}")
-    print(f"BOT_TOKEN exists: {bool(BOT_TOKEN)}")
-
+    print("🚀 IMS Style Bot Started...")
     while True:
         check_messages()
-        time.sleep(5)
+        time.sleep(4)
