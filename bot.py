@@ -5,7 +5,7 @@ import json
 
 api_key = os.environ["API_KEY"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-CHAT_ID = "-1003178872820"
+CHAT_ID = "-1004469160922"
 
 url = "https://redxsms.com/api/v1/iprn/messages"
 
