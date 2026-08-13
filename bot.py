@@ -2,7 +2,9 @@ import os
 import requests
 import re
 import json
-from datetime import datetime, timezone
+import time
+import threading
+from datetime import datetime, timezone, timedelta
 
 api_key = os.environ["API_KEY"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
@@ -16,7 +18,10 @@ headers = {
 }
 
 LAST_ID_FILE = "last_id.txt"
-PROCESSED_IDS_FILE = "processed_ids.txt"   # keeps track of already sent messages
+PROCESSED_IDS_FILE = "processed_ids.txt"
+
+# Bangladesh time (UTC+6)
+BD_TZ = timezone(timedelta(hours=6))
 
 def get_last_processed_id():
     if os.path.exists(LAST_ID_FILE):
@@ -38,48 +43,70 @@ def save_processed_id(msg_id):
     with open(PROCESSED_IDS_FILE, "a") as f:
         f.write(str(msg_id) + "\n")
 
-def get_country_flag(number):
-    country_flags = {
-        "93": "🇦🇫", "355": "🇦🇱", "213": "🇩🇿", "376": "🇦🇩", "244": "🇦🇴",
-        "54": "🇦🇷", "374": "🇦🇲", "61": "🇦🇺", "43": "🇦🇹", "994": "🇦🇿",
-        "973": "🇧🇭", "880": "🇧🇩", "375": "🇧🇾", "32": "🇧🇪", "501": "🇧🇿",
-        "229": "🇧🇯", "975": "🇧🇹", "591": "🇧🇴", "387": "🇧🇦", "267": "🇧🇼",
-        "55": "🇧🇷", "673": "🇧🇳", "359": "🇧🇬", "226": "🇧🇫", "257": "🇧🇮",
-        "855": "🇰🇭", "237": "🇨🇲", "1": "🇺🇸", "238": "🇨🇻", "236": "🇨🇫",
-        "235": "🇹🇩", "56": "🇨🇱", "86": "🇨🇳", "57": "🇨🇴", "269": "🇰🇲",
-        "242": "🇨🇬", "243": "🇨🇩", "506": "🇨🇷", "385": "🇭🇷", "53": "🇨🇺",
-        "357": "🇨🇾", "420": "🇨🇿", "45": "🇩🇰", "253": "🇩🇯", "1767": "🇩🇲",
-        "1809": "🇩🇴", "593": "🇪🇨", "20": "🇪🇬", "503": "🇸🇻", "240": "🇬🇶",
-        "291": "🇪🇷", "372": "🇪🇪", "251": "🇪🇹", "679": "🇫🇯", "358": "🇫🇮",
-        "33": "🇫🇷", "241": "🇬🇦", "220": "🇬🇲", "995": "🇬🇪", "49": "🇩🇪",
-        "233": "🇬🇭", "30": "🇬🇷", "502": "🇬🇹", "224": "🇬🇳", "245": "🇬🇼",
-        "592": "🇬🇾", "509": "🇭🇹", "504": "🇭🇳", "36": "🇭🇺", "354": "🇮🇸",
-        "91": "🇮🇳", "62": "🇮🇩", "98": "🇮🇷", "964": "🇮🇶", "353": "🇮🇪",
-        "972": "🇮🇱", "39": "🇮🇹", "1876": "🇯🇲", "81": "🇯🇵", "962": "🇯🇴",
-        "7": "🇰🇿", "254": "🇰🇪", "965": "🇰🇼", "996": "🇰🇬", "856": "🇱🇦",
-        "371": "🇱🇻", "961": "🇱🇧", "266": "🇱🇸", "231": "🇱🇷", "218": "🇱🇾",
-        "423": "🇱🇮", "370": "🇱🇹", "352": "🇱🇺", "261": "🇲🇬", "265": "🇲🇼",
-        "60": "🇲🇾", "960": "🇲🇻", "223": "🇲🇱", "356": "🇲🇹", "52": "🇲🇽",
-        "373": "🇲🇩", "377": "🇲🇨", "976": "🇲🇳", "382": "🇲🇪", "212": "🇲🇦",
-        "258": "🇲🇿", "95": "🇲🇲", "264": "🇳🇦", "977": "🇳🇵", "31": "🇳🇱",
-        "64": "🇳🇿", "505": "🇳🇮", "227": "🇳🇪", "234": "🇳🇬", "47": "🇳🇴",
-        "968": "🇴🇲", "92": "🇵🇰", "970": "🇵🇸", "507": "🇵🇦", "675": "🇵🇬",
-        "595": "🇵🇾", "51": "🇵🇪", "63": "🇵🇭", "48": "🇵🇱", "351": "🇵🇹",
-        "974": "🇶🇦", "40": "🇷🇴", "7": "🇷🇺", "250": "🇷🇼", "966": "🇸🇦",
-        "221": "🇸🇳", "381": "🇷🇸", "248": "🇸🇨", "232": "🇸🇱", "65": "🇸🇬",
-        "421": "🇸🇰", "386": "🇸🇮", "252": "🇸🇴", "27": "🇿🇦", "82": "🇰🇷",
-        "34": "🇪🇸", "94": "🇱🇰", "249": "🇸🇩", "597": "🇸🇷", "46": "🇸🇪",
-        "41": "🇨🇭", "963": "🇸🇾", "886": "🇹🇼", "992": "🇹🇯", "255": "🇹🇿",
-        "66": "🇹🇭", "228": "🇹🇬", "676": "🇹🇴", "216": "🇹🇳", "90": "🇹🇷",
-        "993": "🇹🇲", "256": "🇺🇬", "380": "🇺🇦", "971": "🇦🇪", "44": "🇬🇧",
-        "598": "🇺🇾", "998": "🇺🇿", "58": "🇻🇪", "84": "🇻🇳", "967": "🇾🇪",
-        "260": "🇿🇲", "263": "🇿🇼"
+def get_country_info(number):
+    country_data = {
+        "93": ("🇦🇫", "Afghanistan"), "355": ("🇦🇱", "Albania"), "213": ("🇩🇿", "Algeria"),
+        "376": ("🇦🇩", "Andorra"), "244": ("🇦🇴", "Angola"), "54": ("🇦🇷", "Argentina"),
+        "374": ("🇦🇲", "Armenia"), "61": ("🇦🇺", "Australia"), "43": ("🇦🇹", "Austria"),
+        "994": ("🇦🇿", "Azerbaijan"), "973": ("🇧🇭", "Bahrain"), "880": ("🇧🇩", "Bangladesh"),
+        "375": ("🇧🇾", "Belarus"), "32": ("🇧🇪", "Belgium"), "501": ("🇧🇿", "Belize"),
+        "229": ("🇧🇯", "Benin"), "975": ("🇧🇹", "Bhutan"), "591": ("🇧🇴", "Bolivia"),
+        "387": ("🇧🇦", "Bosnia"), "267": ("🇧🇼", "Botswana"), "55": ("🇧🇷", "Brazil"),
+        "673": ("🇧🇳", "Brunei"), "359": ("🇧🇬", "Bulgaria"), "226": ("🇧🇫", "Burkina Faso"),
+        "257": ("🇧🇮", "Burundi"), "855": ("🇰🇭", "Cambodia"), "237": ("🇨🇲", "Cameroon"),
+        "1": ("🇺🇸", "United States"), "238": ("🇨🇻", "Cape Verde"), "236": ("🇨🇫", "Central African Republic"),
+        "235": ("🇹🇩", "Chad"), "56": ("🇨🇱", "Chile"), "86": ("🇨🇳", "China"),
+        "57": ("🇨🇴", "Colombia"), "269": ("🇰🇲", "Comoros"), "242": ("🇨🇬", "Congo"),
+        "243": ("🇨🇩", "DR Congo"), "506": ("🇨🇷", "Costa Rica"), "385": ("🇭🇷", "Croatia"),
+        "53": ("🇨🇺", "Cuba"), "357": ("🇨🇾", "Cyprus"), "420": ("🇨🇿", "Czech Republic"),
+        "45": ("🇩🇰", "Denmark"), "253": ("🇩🇯", "Djibouti"), "1767": ("🇩🇲", "Dominica"),
+        "1809": ("🇩🇴", "Dominican Republic"), "593": ("🇪🇨", "Ecuador"), "20": ("🇪🇬", "Egypt"),
+        "503": ("🇸🇻", "El Salvador"), "240": ("🇬🇶", "Equatorial Guinea"), "291": ("🇪🇷", "Eritrea"),
+        "372": ("🇪🇪", "Estonia"), "251": ("🇪🇹", "Ethiopia"), "679": ("🇫🇯", "Fiji"),
+        "358": ("🇫🇮", "Finland"), "33": ("🇫🇷", "France"), "241": ("🇬🇦", "Gabon"),
+        "220": ("🇬🇲", "Gambia"), "995": ("🇬🇪", "Georgia"), "49": ("🇩🇪", "Germany"),
+        "233": ("🇬🇭", "Ghana"), "30": ("🇬🇷", "Greece"), "502": ("🇬🇹", "Guatemala"),
+        "224": ("🇬🇳", "Guinea"), "245": ("🇬🇼", "Guinea-Bissau"), "592": ("🇬🇾", "Guyana"),
+        "509": ("🇭🇹", "Haiti"), "504": ("🇭🇳", "Honduras"), "36": ("🇭🇺", "Hungary"),
+        "354": ("🇮🇸", "Iceland"), "91": ("🇮🇳", "India"), "62": ("🇮🇩", "Indonesia"),
+        "98": ("🇮🇷", "Iran"), "964": ("🇮🇶", "Iraq"), "353": ("🇮🇪", "Ireland"),
+        "972": ("🇮🇱", "Israel"), "39": ("🇮🇹", "Italy"), "1876": ("🇯🇲", "Jamaica"),
+        "81": ("🇯🇵", "Japan"), "962": ("🇯🇴", "Jordan"), "7": ("🇷🇺", "Russia"),
+        "254": ("🇰🇪", "Kenya"), "965": ("🇰🇼", "Kuwait"), "996": ("🇰🇬", "Kyrgyzstan"),
+        "856": ("🇱🇦", "Laos"), "371": ("🇱🇻", "Latvia"), "961": ("🇱🇧", "Lebanon"),
+        "266": ("🇱🇸", "Lesotho"), "231": ("🇱🇷", "Liberia"), "218": ("🇱🇾", "Libya"),
+        "423": ("🇱🇮", "Liechtenstein"), "370": ("🇱🇹", "Lithuania"), "352": ("🇱🇺", "Luxembourg"),
+        "261": ("🇲🇬", "Madagascar"), "265": ("🇲🇼", "Malawi"), "60": ("🇲🇾", "Malaysia"),
+        "960": ("🇲🇻", "Maldives"), "223": ("🇲🇱", "Mali"), "356": ("🇲🇹", "Malta"),
+        "52": ("🇲🇽", "Mexico"), "373": ("🇲🇩", "Moldova"), "377": ("🇲🇨", "Monaco"),
+        "976": ("🇲🇳", "Mongolia"), "382": ("🇲🇪", "Montenegro"), "212": ("🇲🇦", "Morocco"),
+        "258": ("🇲🇿", "Mozambique"), "95": ("🇲🇲", "Myanmar"), "264": ("🇳🇦", "Namibia"),
+        "977": ("🇳🇵", "Nepal"), "31": ("🇳🇱", "Netherlands"), "64": ("🇳🇿", "New Zealand"),
+        "505": ("🇳🇮", "Nicaragua"), "227": ("🇳🇪", "Niger"), "234": ("🇳🇬", "Nigeria"),
+        "47": ("🇳🇴", "Norway"), "968": ("🇴🇲", "Oman"), "92": ("🇵🇰", "Pakistan"),
+        "970": ("🇵🇸", "Palestine"), "507": ("🇵🇦", "Panama"), "675": ("🇵🇬", "Papua New Guinea"),
+        "595": ("🇵🇾", "Paraguay"), "51": ("🇵🇪", "Peru"), "63": ("🇵🇭", "Philippines"),
+        "48": ("🇵🇱", "Poland"), "351": ("🇵🇹", "Portugal"), "974": ("🇶🇦", "Qatar"),
+        "40": ("🇷🇴", "Romania"), "250": ("🇷🇼", "Rwanda"), "966": ("🇸🇦", "Saudi Arabia"),
+        "221": ("🇸🇳", "Senegal"), "381": ("🇷🇸", "Serbia"), "248": ("🇸🇨", "Seychelles"),
+        "232": ("🇸🇱", "Sierra Leone"), "65": ("🇸🇬", "Singapore"), "421": ("🇸🇰", "Slovakia"),
+        "386": ("🇸🇮", "Slovenia"), "252": ("🇸🇴", "Somalia"), "27": ("🇿🇦", "South Africa"),
+        "82": ("🇰🇷", "South Korea"), "34": ("🇪🇸", "Spain"), "94": ("🇱🇰", "Sri Lanka"),
+        "249": ("🇸🇩", "Sudan"), "597": ("🇸🇷", "Suriname"), "46": ("🇸🇪", "Sweden"),
+        "41": ("🇨🇭", "Switzerland"), "963": ("🇸🇾", "Syria"), "886": ("🇹🇼", "Taiwan"),
+        "992": ("🇹🇯", "Tajikistan"), "255": ("🇹🇿", "Tanzania"), "66": ("🇹🇭", "Thailand"),
+        "228": ("🇹🇬", "Togo"), "676": ("🇹🇴", "Tonga"), "216": ("🇹🇳", "Tunisia"),
+        "90": ("🇹🇷", "Turkey"), "993": ("🇹🇲", "Turkmenistan"), "256": ("🇺🇬", "Uganda"),
+        "380": ("🇺🇦", "Ukraine"), "971": ("🇦🇪", "United Arab Emirates"), "44": ("🇬🇧", "United Kingdom"),
+        "598": ("🇺🇾", "Uruguay"), "998": ("🇺🇿", "Uzbekistan"), "58": ("🇻🇪", "Venezuela"),
+        "84": ("🇻🇳", "Vietnam"), "967": ("🇾🇪", "Yemen"), "260": ("🇿🇲", "Zambia"),
+        "263": ("🇿🇼", "Zimbabwe")
     }
 
-    for prefix_code in sorted(country_flags.keys(), key=len, reverse=True):
+    for prefix_code in sorted(country_data.keys(), key=len, reverse=True):
         if number.startswith(prefix_code):
-            return country_flags[prefix_code]
-    return "🌐"
+            return country_data[prefix_code]
+    return ("🌐", "Unknown")
 
 def mask_number(number):
     if len(number) > 8:
@@ -137,6 +164,19 @@ def get_service_info(item, message_text):
 
     return detected_name, emoji
 
+def delete_message_later(chat_id, message_id):
+    """3 মিনিট পর মেসেজ ডিলিট করবে"""
+    time.sleep(180)
+    try:
+        delete_url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage"
+        requests.post(delete_url, json={
+            "chat_id": chat_id,
+            "message_id": message_id
+        }, timeout=10)
+        print(f"Message {message_id} auto-deleted after 3 minutes")
+    except Exception as e:
+        print(f"Delete error: {e}")
+
 def send_telegram_message(text, emoji, otp_code):
     tg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
@@ -144,8 +184,18 @@ def send_telegram_message(text, emoji, otp_code):
         "inline_keyboard": [
             [
                 {
-                    "text": f"{emoji} 📋 {otp_code}",
+                    "text": f"{emoji} 📋 Copy OTP",
                     "copy_text": {"text": otp_code}
+                }
+            ],
+            [
+                {
+                    "text": "📞 Get Number",
+                    "url": "https://t.me/Heueururuhhd_bot"
+                },
+                {
+                    "text": "📢 Main Channel",
+                    "url": "https://t.me/Global_Method_Channel"
                 }
             ]
         ]
@@ -157,31 +207,38 @@ def send_telegram_message(text, emoji, otp_code):
         "parse_mode": "Markdown",
         "reply_markup": json.dumps(inline_keyboard)
     }
+
     try:
-        requests.post(tg_url, json=payload)
+        resp = requests.post(tg_url, json=payload, timeout=15)
+        data = resp.json()
+        if data.get("ok"):
+            message_id = data["result"]["message_id"]
+            # ৩ মিনিট পর অটো ডিলিট
+            t = threading.Thread(target=delete_message_later, args=(CHAT_ID, message_id), daemon=True)
+            t.start()
+            return message_id
+        else:
+            print(f"Telegram Error: {data}")
+            return None
     except Exception as e:
         print(f"Telegram Error: {e}")
+        return None
 
 def is_today(item):
-    """Check if the message belongs to today (UTC)."""
-    # Try common date fields
     for key in ["received_at", "created_at", "date", "timestamp", "time"]:
         if key in item and item[key]:
             try:
                 raw = str(item[key])
-                # Handle both ISO and unix timestamp style
                 if raw.isdigit():
                     dt = datetime.fromtimestamp(int(raw), tz=timezone.utc)
                 else:
-                    # remove Z or timezone part if present
                     raw = raw.replace("Z", "+00:00")
                     dt = datetime.fromisoformat(raw)
                     if dt.tzinfo is None:
                         dt = dt.replace(tzinfo=timezone.utc)
-                return dt.date() == datetime.now(timezone.utc).date()
+                return dt.astimezone(BD_TZ).date() == datetime.now(BD_TZ).date()
             except Exception:
                 continue
-    # If no date field found, assume it is recent (include it)
     return True
 
 def process_message(item, processed_ids):
@@ -193,30 +250,37 @@ def process_message(item, processed_ids):
     msg_body = item.get("message", "") or ""
 
     service_name, service_emoji = get_service_info(item, msg_body)
-    flag = get_country_flag(raw_number)
+    flag, country_name = get_country_info(raw_number)
     masked_num = mask_number(raw_number)
     prefix = raw_number[:5] if len(raw_number) >= 5 else raw_number
 
     otp_match = re.search(r'\b\d{3}[-\s]?\d{3}\b|\b\d{4,8}\b', msg_body)
     otp_code = otp_match.group(0) if otp_match else "N/A"
 
+    # Live time (Bangladesh time)
+    now = datetime.now(BD_TZ)
+    live_time = now.strftime("%d %b %Y • %H:%M")
+
     formatted_msg = (
-        f"{service_emoji} {service_name} {flag} `{masked_num}`\n\n"
+        f"{service_emoji} **{service_name}**\n"
+        f"{flag} **{country_name}**\n"
+        f"🕒 `{live_time}`\n\n"
         f"```{msg_body}```\n\n"
         f"🔍 Prefix : `+{prefix}`\n"
         f"🔑 OTP : `{otp_code}`\n\n"
-        f"⚠️ Just demo otp"
+        f"⏳ OTP auto delete after 3 minutes"
     )
 
-    send_telegram_message(formatted_msg, service_emoji, otp_code)
-    save_processed_id(msg_id)
-    save_last_processed_id(msg_id)
-    print(f"Sent → ID: {msg_id} | OTP: {otp_code}")
-    return True
+    sent = send_telegram_message(formatted_msg, service_emoji, otp_code)
+    if sent:
+        save_processed_id(msg_id)
+        save_last_processed_id(msg_id)
+        print(f"Sent → ID: {msg_id} | OTP: {otp_code} | Country: {country_name}")
+        return True
+    return False
 
 def check_messages(send_all_today=False):
     try:
-        # Fetch more messages so we can catch all of today's
         params = {'per_page': 50}
         response = requests.get(url, headers=headers, params=params, timeout=15)
         result = response.json()
@@ -229,20 +293,18 @@ def check_messages(send_all_today=False):
         processed_ids = load_processed_ids()
         sent_count = 0
 
-        # Reverse so older messages go first when sending all of today
         for item in reversed(messages):
             if send_all_today:
                 if is_today(item):
                     if process_message(item, processed_ids):
                         sent_count += 1
             else:
-                # Normal mode – only new messages
                 msg_id = str(item.get("id", item.get("received_at", "")))
                 last_saved = get_last_processed_id()
                 if msg_id != last_saved and msg_id not in processed_ids:
                     if process_message(item, processed_ids):
                         sent_count += 1
-                        break   # only the newest one in continuous mode
+                        break
 
         if sent_count == 0:
             print("No new messages.")
@@ -258,7 +320,6 @@ if __name__ == "__main__":
     check_messages(send_all_today=True)
 
     print("→ Now watching for new messages (Ctrl+C to stop)...")
-    import time
     while True:
         check_messages(send_all_today=False)
-        time.sleep(8)   # check every 8 seconds
+        time.sleep(8)
