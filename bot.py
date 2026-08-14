@@ -18,6 +18,10 @@ headers = {
 
 PROCESSED_IDS_FILE = "processed_ids.txt"
 
+# HTTP Connection Pooling এর জন্য Session ব্যবহার
+session = requests.Session()
+session.headers.update(headers)
+
 def clear_processed_ids():
     if os.path.exists(PROCESSED_IDS_FILE):
         os.remove(PROCESSED_IDS_FILE)
@@ -123,8 +127,8 @@ def get_service_info(item, message_text):
 def delete_message_later(chat_id, message_id):
     time.sleep(180)
     try:
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage",
-                      json={"chat_id": chat_id, "message_id": message_id}, timeout=10)
+        session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage",
+                     json={"chat_id": chat_id, "message_id": message_id}, timeout=5)
     except:
         pass
 
@@ -160,7 +164,7 @@ def send_telegram_message(text, otp_code):
     }
 
     try:
-        resp = requests.post(tg_url, json=payload, timeout=10)
+        resp = session.post(tg_url, json=payload, timeout=5)
         data = resp.json()
         if data.get("ok"):
             msg_id = data["result"]["message_id"]
@@ -192,30 +196,29 @@ def process_message(item, processed_ids):
 
     if send_telegram_message(header, otp_code):
         save_processed_id(msg_id)
+        processed_ids.add(msg_id)
         print(f"✅ NEW → {flag} {country_code} | {service_short} +{masked} → {otp_code}")
         return True
     return False
 
-def check_messages():
+def check_messages(processed_ids):
     try:
-        params = {'per_page': 15}
-        response = requests.get(url, headers=headers, params=params, timeout=8)
+        params = {'per_page': 20}
+        response = session.get(url, params=params, timeout=5)
         result = response.json()
         messages = result.get("data", [])
 
         if not messages:
             return
 
-        processed_ids = load_processed_ids()
         sent = 0
-
-        # নতুন মেসেজ আগে প্রসেস করার জন্য
-        for item in messages:
+        # নতুন মেসেজ যেন সাথে সাথে প্রসেস হয়, তাই লিস্ট রিভার্স করা হয়েছে
+        for item in reversed(messages):
             if process_message(item, processed_ids):
                 sent += 1
 
         if sent:
-            print(f"→ {sent} new OTP sent")
+            print(f"→ {sent} new OTP sent to group")
 
     except Exception as e:
         print("API Error:", e)
@@ -223,11 +226,13 @@ def check_messages():
 if __name__ == "__main__":
     print("🚀 Fast Bot Starting...")
     clear_processed_ids()
+    
+    processed_ids = load_processed_ids()
 
-    print("→ Sending all current messages first...")
-    check_messages()
+    print("→ Processing existing panel messages...")
+    check_messages(processed_ids)
+    print("→ All existing messages processed! Bot is now running live...")
 
-    print("→ Live mode (checking every 2 seconds)...")
     while True:
-        check_messages()
-        time.sleep(2)   # ← ২ সেকেন্ডে একবার চেক (সবচেয়ে ফাস্ট)
+        check_messages(processed_ids)
+        time.sleep(1.5)
