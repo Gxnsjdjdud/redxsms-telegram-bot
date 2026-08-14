@@ -489,7 +489,6 @@ async def otp_polling(app: Application):
             logger.error(f"Polling error: {e}")
 
         await asyncio.sleep(3)
-
 # ================== MAIN ==================
 def main():
     if not BOT_TOKEN:
@@ -499,11 +498,11 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("admin", admin_cmd))
-app.add_handler(CallbackQueryHandler(check_join, pattern="^check_join$"))
-app.add_handler(CallbackQueryHandler(admin_cb, pattern="^adm_"))
-app.add_handler(CallbackQueryHandler(callback_handler))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    app.add_handler(CommandHandler("admin", admin_cmd))
+    app.add_handler(CallbackQueryHandler(check_join, pattern="^check_join$"))
+    app.add_handler(CallbackQueryHandler(admin_cb, pattern="^adm_"))
+    app.add_handler(CallbackQueryHandler(callback_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
     # Start OTP polling
     async def post_init(application: Application):
@@ -512,7 +511,9 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     app.post_init = post_init
 
     print("🚀 Bot is running...")
+
     app.run_polling(drop_pending_updates=True)
+
 
 if __name__ == "__main__":
     main()
