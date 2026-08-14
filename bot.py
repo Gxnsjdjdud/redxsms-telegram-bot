@@ -5,14 +5,16 @@ import time
 import asyncio
 import logging
 import requests
-from typing import Dict, List, Set
+from typing import Dict, List, Set, Optional
+from datetime import datetime
 
 from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
-    KeyboardButton
+    KeyboardButton,
+    BotCommand
 )
 from telegram.ext import (
     Application,
@@ -22,15 +24,9 @@ from telegram.ext import (
     ContextTypes,
     filters
 )
+from telegram.constants import ParseMode
 
-# Logging configuration
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
-# Config from Environment Variables
+# ================== CONFIG ==================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 API_KEY = os.environ.get("API_KEY", "sk_live_1x7jN6OUqTIzUNEv7MIM9Er2h5GphCXer9ef4BUx")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "8136997138"))
@@ -38,47 +34,58 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID", "8136997138"))
 BASE_URL = "https://redxsms.com/api/v1/iprn"
 MUST_JOIN_CHANNEL = "@Global_Method_Channel"
 MUST_JOIN_CHANNEL_URL = "https://t.me/Global_Method_Channel"
+OTP_GROUP = "-1004469160922"          # তোমার OTP গ্রুপ আইডি (লিংক না, আইডি দাও)
 OTP_GROUP_LINK = "https://t.me/+ZFN7DCwaLmsxMGQx"
 ADMIN_USERNAME = "Smart_Method_Owner"
 
 REFERRAL_BONUS = 0.00189
 OTP_BONUS = 0.00180
 MIN_WITHDRAW = 2.0
+NUMBER_RESERVE_TIME = 120  # 2 minutes
 
-# In-Memory Database (For production, connecting MongoDB/SQLite is recommended)
+# ================== DATABASE (In-Memory) ==================
 users_db: Dict[int, dict] = {}
-numbers_db: Dict[str, dict] = {}  # {service: {country: [numbers]}}
-user_sessions: Dict[int, dict] = {}  # {user_id: {"service": str, "country": str, "numbers": list, "timestamp": float}}
+numbers_db: Dict[str, Dict[str, List[str]]] = {}  # service -> country -> [numbers]
+user_sessions: Dict[int, dict] = {}               # user_id -> session
 withdrawal_requests: Dict[str, dict] = {}
+processed_otps: Set[str] = set()
 
-# Allowed default services
-DEFAULT_SERVICES = ["Whatsapp", "Telegram", "Facebook", "Tiktok", "1xbet"]
+DEFAULT_SERVICES = ["WhatsApp", "Telegram", "Facebook", "TikTok", "1xBet"]
 
-# ----------------- Helper Functions ----------------- #
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-def get_user(user_id: int, username: str = "", ref_by: int = None) -> dict:
+# ================== HELPERS ==================
+def get_user(user_id: int, username: str = "", first_name: str = "", ref_by: int = None) -> dict:
     if user_id not in users_db:
         users_db[user_id] = {
             "user_id": user_id,
             "username": username,
+            "first_name": first_name,
             "balance": 0.0,
             "ref_by": ref_by,
             "total_ref": 0,
             "total_otp": 0,
-            "state": None
+            "state": None,
+            "temp_srv": None,
+            "temp_cnt": None
         }
         if ref_by and ref_by in users_db and ref_by != user_id:
             users_db[ref_by]["balance"] += REFERRAL_BONUS
             users_db[ref_by]["total_ref"] += 1
     return users_db[user_id]
 
-async def is_subscribed(bot, user_id: int) -> bool:
-    try:
-        member = await bot.get_chat_member(chat_id=MUST_JOIN_CHANNEL, user_id=user_id)
-        return member.status in ["creator", "administrator", "member"]
-    except Exception as e:
-        logger.error(f"Channel Check Error: {e}")
-        return True  # Fallback if channel access fails
+def clean_number(num: str) -> str:
+    """Remove + and spaces"""
+    return re.sub(r"[^\d]", "", num)
+
+def format_number(num: str) -> str:
+    """Always show with +"""
+    num = clean_number(num)
+    return f"+{num}"
 
 def get_main_keyboard():
     keyboard = [
@@ -88,442 +95,424 @@ def get_main_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# ----------------- Command Handlers ----------------- #
+async def is_joined(bot, user_id: int) -> bool:
+    try:
+        member = await bot.get_chat_member(MUST_JOIN_CHANNEL, user_id)
+        return member.status in ("member", "administrator", "creator")
+    except Exception:
+        return True  # fallback
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================== START ==================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     args = context.args
     ref_by = int(args[0]) if args and args[0].isdigit() else None
 
-    get_user(user.id, user.username, ref_by)
+    get_user(user.id, user.username or "", user.first_name or "", ref_by)
 
-    # Check Channel Subscription
-    subscribed = await is_subscribed(context.bot, user.id)
-    if not subscribed:
-        keyboard = [
+    if not await is_joined(context.bot, user.id):
+        kb = [
             [InlineKeyboardButton("📢 Join Channel", url=MUST_JOIN_CHANNEL_URL)],
-            [InlineKeyboardButton("✅ Joined / Check", callback_data="check_join")]
+            [InlineKeyboardButton("✅ I Joined", callback_data="check_join")]
         ]
         await update.message.reply_text(
-            f"👋 Welcome {user.first_name}!\n\n"
-            f"⚠️ বটে কাজ শুরু করার জন্য আপনাকে অবশ্যই আমাদের চ্যানেলে জয়েন হতে হবে:\n{MUST_JOIN_CHANNEL_URL}",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            f"👋 Welcome <b>{user.first_name}</b>!\n\n"
+            f"বট ব্যবহার করতে অবশ্যই আমাদের চ্যানেলে জয়েন হতে হবে:\n"
+            f"{MUST_JOIN_CHANNEL_URL}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(kb)
         )
         return
 
     await update.message.reply_text(
-        f"👋 Welcome {user.first_name} to OTP Bot!\nনিচের মেনু থেকে আপনার অপশন সিলেক্ট করুন:",
+        f"👋 Welcome <b>{user.first_name}</b>!\n\nনিচের মেনু থেকে অপশন সিলেক্ট করুন:",
+        parse_mode=ParseMode.HTML,
         reply_markup=get_main_keyboard()
     )
 
-async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def check_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    user = query.from_user
-
-    subscribed = await is_subscribed(context.bot, user.id)
-    if subscribed:
+    if await is_joined(context.bot, query.from_user.id):
         await query.message.delete()
         await context.bot.send_message(
-            chat_id=user.id,
-            text="✅ ধন্যবাদ! আপনি সঠিকভাবে জয়েন করেছেন।",
+            query.from_user.id,
+            "✅ জয়েন সম্পন্ন! এখন বট ব্যবহার করতে পারবেন।",
             reply_markup=get_main_keyboard()
         )
     else:
-        await query.answer("❌ আপনি এখনো চ্যানেলে জয়েন হননি! দয়া করে জয়েন করুন।", show_alert=True)
+        await query.answer("❌ এখনো চ্যানেলে জয়েন হননি!", show_alert=True)
 
-# ----------------- User Keyboards & Features ----------------- #
-
-async def handle_message_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+# ================== USER FEATURES ==================
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
     user = update.effective_user
-    user_data = get_user(user.id, user.username)
+    ud = get_user(user.id, user.username or "", user.first_name or "")
 
-    # Admin State Checking
-    if user.id == ADMIN_ID and user_data.get("state"):
-        state = user_data["state"]
+    # ----- Admin States -----
+    if user.id == ADMIN_ID and ud.get("state"):
+        state = ud["state"]
+
         if state == "WAITING_BROADCAST":
-            user_data["state"] = None
-            await update.message.reply_text("📢 Broadcast শুরু হয়েছে...")
+            ud["state"] = None
             count = 0
             for uid in list(users_db.keys()):
                 try:
-                    await context.bot.send_message(chat_id=uid, text=text)
+                    await context.bot.send_message(uid, text)
                     count += 1
                 except:
                     pass
-            await update.message.reply_text(f"✅ মোট {count} জন ইউজারকে বার্তা পাঠানো হয়েছে।")
+            await update.message.reply_text(f"✅ Broadcast পাঠানো হয়েছে → {count} জন")
             return
 
-        elif state.startswith("REJECT_WITHDRAW_"):
-            req_id = state.replace("REJECT_WITHDRAW_", "")
-            user_data["state"] = None
+        if state.startswith("REJECT_"):
+            req_id = state.replace("REJECT_", "")
+            ud["state"] = None
             if req_id in withdrawal_requests:
                 req = withdrawal_requests.pop(req_id)
-                target_user = req["user_id"]
-                amount = req["amount"]
-                users_db[target_user]["balance"] += amount  # Refund
-
+                users_db[req["user_id"]]["balance"] += req["amount"]
                 await context.bot.send_message(
-                    chat_id=target_user,
-                    text=f"❌ আপনার ${amount} Withdraw রিকোয়েস্টটি বাতিল করা হয়েছে।\n\n📌 কারণ: {text}"
+                    req["user_id"],
+                    f"❌ Withdraw রিকোয়েস্ট বাতিল করা হয়েছে।\n\nকারণ: {text}"
                 )
-                await update.message.reply_text("✅ রিজেক্ট মেসেজ ইউজারের কাছে পাঠানো হয়েছে।")
+                await update.message.reply_text("✅ রিজেক্ট মেসেজ পাঠানো হয়েছে")
             return
 
-        elif state == "ADD_NUMBERS_INPUT":
-            user_data["state"] = None
-            # Extract numbers from text
-            raw_numbers = re.findall(r'\+?\d{8,15}', text)
-            if not raw_numbers:
-                await update.message.reply_text("❌ কোনো সঠিক নম্বর পাওয়া যায়নি।")
+        if state == "ADD_NUMBERS":
+            ud["state"] = None
+            srv = ud.get("temp_srv")
+            cnt = ud.get("temp_cnt")
+            nums = re.findall(r"\+?\d{8,15}", text)
+            if not nums:
+                await update.message.reply_text("❌ কোনো নাম্বার পাওয়া যায়নি")
                 return
-
-            srv = user_data.get("temp_srv")
-            cnt = user_data.get("temp_cnt")
 
             if srv not in numbers_db:
                 numbers_db[srv] = {}
             if cnt not in numbers_db[srv]:
                 numbers_db[srv][cnt] = []
 
-            added_count = 0
-            for num in raw_numbers:
-                clean_num = num.strip().replace("+", "")
-                if clean_num not in numbers_db[srv][cnt]:
-                    numbers_db[srv][cnt].append(clean_num)
-                    added_count += 1
+            added = 0
+            for n in nums:
+                clean = clean_number(n)
+                if clean not in numbers_db[srv][cnt]:
+                    numbers_db[srv][cnt].append(clean)
+                    added += 1
 
-            await update.message.reply_text(f"✅ {added_count} টি নম্বর সফলভাবে যোগ করা হয়েছে!")
+            await update.message.reply_text(f"✅ {added} টি নাম্বার যোগ করা হয়েছে!")
 
-            # Notify All Users
-            notify_text = (
-                f"🔔 **নতুন নম্বর যুক্ত করা হয়েছে!**\n\n"
-                f"🌐 Service: {srv}\n"
-                f"🏳️ Country: {cnt}\n"
-                f"🔢 Total Added: {added_count} টি"
+            # Notify all users
+            notify = (
+                f"🔔 <b>নতুন নাম্বার যোগ করা হয়েছে!</b>\n\n"
+                f"Service: <b>{srv}</b>\n"
+                f"Country: <b>{cnt}</b>\n"
+                f"Added: <b>{added}</b> টি"
             )
             for uid in list(users_db.keys()):
                 try:
-                    await context.bot.send_message(chat_id=uid, text=notify_text, parse_mode="Markdown")
+                    await context.bot.send_message(uid, notify, parse_mode=ParseMode.HTML)
                 except:
                     pass
             return
 
-    # User Button Handlers
+    # ----- Normal User Buttons -----
     if text == "📱 Get Number":
-        keyboard = []
+        kb = []
         row = []
-        for srv in DEFAULT_SERVICES:
-            row.append(InlineKeyboardButton(srv, callback_data=f"select_srv_{srv}"))
+        for s in DEFAULT_SERVICES:
+            row.append(InlineKeyboardButton(s, callback_data=f"srv_{s}"))
             if len(row) == 2:
-                keyboard.append(row)
+                kb.append(row)
                 row = []
         if row:
-            keyboard.append(row)
-
-        await update.message.reply_text("📌 আপনার কাঙ্ক্ষিত Service টি নির্বাচন করুন:", reply_markup=InlineKeyboardMarkup(keyboard))
+            kb.append(row)
+        await update.message.reply_text("📌 Service সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(kb))
 
     elif text == "👤 Account":
         msg = (
-            f"👤 **User Info**\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"🆔 User ID: `{user.id}`\n"
-            f"👤 Username: @{user.username or 'N/A'}\n"
-            f"💰 Balance: `${user_data['balance']:.5f}`\n"
-            f"👥 Total Refer: `{user_data['total_ref']}`\n"
-            f"📩 Total OTP Received: `{user_data['total_otp']}`"
+            f"👤 <b>Account Info</b>\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"🆔 ID: <code>{user.id}</code>\n"
+            f"👤 Name: {user.first_name}\n"
+            f"💰 Balance: <b>${ud['balance']:.5f}</b>\n"
+            f"👥 Total Refer: {ud['total_ref']}\n"
+            f"📩 Total OTP: {ud['total_otp']}"
         )
-        await update.message.reply_text(msg, parse_mode="Markdown")
+        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
     elif text == "🎁 Refer":
-        bot_info = await context.bot.get_me()
-        ref_link = f"https://t.me/{bot_info.username}?start={user.id}"
-        msg = (
-            f"🎁 **Referral System**\n\n"
-            f"আপনার বন্ধুকে ইনভাইট করুন এবং প্রতিটি রেফারেলের জন্য পাবেন `${REFERRAL_BONUS}`!\n\n"
-            f"🔗 Ref Link:\n`{ref_link}`"
+        me = await context.bot.get_me()
+        link = f"https://t.me/{me.username}?start={user.id}"
+        await update.message.reply_text(
+            f"🎁 <b>Referral System</b>\n\n"
+            f"প্রতি রেফারে পাবেন: <b>${REFERRAL_BONUS}</b>\n\n"
+            f"🔗 আপনার লিংক:\n<code>{link}</code>",
+            parse_mode=ParseMode.HTML
         )
-        await update.message.reply_text(msg, parse_mode="Markdown")
 
     elif text == "💳 Withdraw":
-        if user_data['balance'] < MIN_WITHDRAW:
-            await update.message.reply_text(f"⚠️ মিনিমাম উইথড্র `${MIN_WITHDRAW}`। আপনার বর্তমান ব্যালেন্স: `${user_data['balance']:.5f}`")
+        if ud["balance"] < MIN_WITHDRAW:
+            await update.message.reply_text(
+                f"⚠️ মিনিমাম উইথড্র ${MIN_WITHDRAW}\n"
+                f"আপনার ব্যালেন্স: ${ud['balance']:.5f}"
+            )
             return
-
-        keyboard = [
-            [InlineKeyboardButton("Binance", callback_data="w_method_Binance")],
-            [InlineKeyboardButton("bKash", callback_data="w_method_bKash"), InlineKeyboardButton("Nagad", callback_data="w_method_Nagad")]
+        kb = [
+            [InlineKeyboardButton("Binance", callback_data="wd_Binance")],
+            [InlineKeyboardButton("bKash", callback_data="wd_bKash"),
+             InlineKeyboardButton("Nagad", callback_data="wd_Nagad")]
         ]
-        await update.message.reply_text("💳 Withdraw Method সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.message.reply_text("💳 Method সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(kb))
 
     elif text == "❓ Help":
-        keyboard = [[InlineKeyboardButton("👨‍💻 Admin", url=f"https://t.me/{ADMIN_USERNAME}")]]
-        await update.message.reply_text("🆘 যেকোনো সহায়তার জন্য অ্যাডমিনের সাথে যোগাযোগ করুন:", reply_markup=InlineKeyboardMarkup(keyboard))
+        kb = [[InlineKeyboardButton("👨‍💻 Admin", url=f"https://t.me/{ADMIN_USERNAME}")]]
+        await update.message.reply_text("🆘 সাহায্যের জন্য অ্যাডমিনের সাথে যোগাযোগ করুন:", reply_markup=InlineKeyboardMarkup(kb))
 
-# ----------------- Service & Number Callbacks ----------------- #
-
+# ================== CALLBACKS ==================
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
     user = query.from_user
+    ud = get_user(user.id)
 
-    if data.startswith("select_srv_"):
-        srv = data.replace("select_srv_", "")
-        # Get countries for this service
-        countries = list(numbers_db.get(srv, {}).keys())
-        if not countries:
-            countries = ["Bangladesh", "India", "USA"]  # Fallback options
+    if data.startswith("srv_"):
+        srv = data[4:]
+        countries = list(numbers_db.get(srv, {}).keys()) or ["Bangladesh", "India", "USA", "Egypt", "Russia"]
+        kb = [[InlineKeyboardButton(f"🏳️ {c}", callback_data=f"cnt_{srv}_{c}")] for c in countries]
+        kb.append([InlineKeyboardButton("⬅️ Back", callback_data="back_services")])
+        await query.edit_message_text(
+            f"🌐 Service: <b>{srv}</b>\n\nCountry সিলেক্ট করুন:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
 
-        keyboard = []
-        for c in countries:
-            keyboard.append([InlineKeyboardButton(f"🏳️ {c}", callback_data=f"select_cnt_{srv}_{c}")])
+    elif data.startswith("cnt_"):
+        parts = data.split("_", 2)
+        srv = parts[1]
+        cnt = parts[2]
 
-        await query.message.edit_text(f"🌐 Service: **{srv}**\n📌 এখন Country নির্বাচন করুন:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+        available = numbers_db.get(srv, {}).get(cnt, [])[:]
+        # Remove numbers already reserved by others
+        reserved = set()
+        for sess in user_sessions.values():
+            reserved.update(sess.get("numbers", []))
+        available = [n for n in available if n not in reserved][:5]
 
-    elif data.startswith("select_cnt_"):
-        _, _, srv, cnt = data.split("_", 3)
+        if not available:
+            await query.edit_message_text("❌ এই কান্ট্রিতে এখন কোনো ফ্রি নাম্বার নেই।")
+            return
 
-        # Allocate 5 numbers
-        available_nums = numbers_db.get(srv, {}).get(cnt, [])
-        allocated = available_nums[:5]
-
-        # Update Session
         user_sessions[user.id] = {
             "service": srv,
             "country": cnt,
-            "numbers": allocated,
-            "timestamp": time.time()
+            "numbers": available,
+            "time": time.time()
         }
 
-        # Format number display
-        text_msg = f"🌐 Service: **{srv}** | 🏳️ Country: **{cnt}**\n"
-        text_msg += "⏰ **এই নম্বরগুলো ২ মিনিটের জন্য আপনার নিকট রিজার্ভ থাকবে:**\n\n"
+        text = (
+            f"🌐 <b>{srv}</b> | 🏳️ <b>{cnt}</b>\n"
+            f"⏰ ২ মিনিটের জন্য রিজার্ভ করা হয়েছে\n\n"
+            f"নিচের নাম্বারে ক্লিক করে কপি করুন:"
+        )
+        kb = [[InlineKeyboardButton(f"📋 {format_number(n)}", callback_data=f"copy_{n}")] for n in available]
+        kb.append([InlineKeyboardButton("🔄 Change Number", callback_data=f"change_{srv}_{cnt}")])
+        kb.append([InlineKeyboardButton("🌐 Change Country", callback_data=f"srv_{srv}")])
+        kb.append([InlineKeyboardButton("📢 OTP Group", url=OTP_GROUP_LINK)])
 
-        keyboard = []
-        for num in allocated:
-            keyboard.append([InlineKeyboardButton(f"📋 +{num}", callback_data=f"copy_{num}")])
-
-        keyboard.append([InlineKeyboardButton("🔄 Change Numbers", callback_data=f"change_num_{srv}_{cnt}")])
-        keyboard.append([InlineKeyboardButton("🌐 Change Country", callback_data=f"select_srv_{srv}")])
-        keyboard.append([InlineKeyboardButton("📢 OTP Group", url=OTP_GROUP_LINK)])
-
-        await query.message.edit_text(text_msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
-
-        # Schedule auto release in 2 minutes (120 sec)
-        asyncio.create_task(auto_release_numbers(user.id, 120))
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb))
+        asyncio.create_task(release_after(user.id, NUMBER_RESERVE_TIME, context.bot))
 
     elif data.startswith("copy_"):
-        num = data.replace("copy_", "")
-        await query.answer(f"Copied: +{num}", show_alert=True)
+        num = data[5:]
+        await query.answer(f"Copied: {format_number(num)}", show_alert=True)
 
-    elif data.startswith("change_num_"):
-        _, _, srv, cnt = data.split("_", 3)
-        # Release existing and fetch new
+    elif data.startswith("change_"):
+        _, srv, cnt = data.split("_", 2)
         if user.id in user_sessions:
             del user_sessions[user.id]
-        
-        # Trigger same selection
-        query.data = f"select_cnt_{srv}_{cnt}"
+        # Re-trigger
+        query.data = f"cnt_{srv}_{cnt}"
         await callback_handler(update, context)
 
-    elif data.startswith("w_method_"):
-        method = data.replace("w_method_", "")
-        user_data = get_user(user.id)
-        amount = user_data["balance"]
-
+    elif data.startswith("wd_"):
+        method = data[3:]
+        amount = ud["balance"]
         if amount < MIN_WITHDRAW:
-            await query.answer("⚠️ অপর্যাপ্ত ব্যালেন্স!", show_alert=True)
+            await query.answer("অপর্যাপ্ত ব্যালেন্স", show_alert=True)
             return
-
-        user_data["balance"] = 0.0  # Deduct
+        ud["balance"] = 0.0
         req_id = str(int(time.time()))
-        withdrawal_requests[req_id] = {
-            "user_id": user.id,
-            "amount": amount,
-            "method": method
-        }
+        withdrawal_requests[req_id] = {"user_id": user.id, "amount": amount, "method": method}
 
-        # Notify Admin
-        admin_keyboard = [
-            [
-                InlineKeyboardButton("✅ Accept", callback_data=f"admin_accept_{req_id}"),
-                InlineKeyboardButton("❌ Reject", callback_data=f"admin_reject_{req_id}")
-            ]
-        ]
-        admin_text = (
-            f"📥 **নতুন উইথড্র রিকোয়েস্ট!**\n\n"
-            f"👤 User: {user.first_name} (`{user.id}`)\n"
-            f"💳 Method: {method}\n"
-            f"💰 Amount: `${amount:.5f}`"
+        kb = [[
+            InlineKeyboardButton("✅ Accept", callback_data=f"acc_{req_id}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"rej_{req_id}")
+        ]]
+        await context.bot.send_message(
+            ADMIN_ID,
+            f"📥 <b>Withdraw Request</b>\n\n"
+            f"User: {user.first_name} (<code>{user.id}</code>)\n"
+            f"Method: {method}\n"
+            f"Amount: <b>${amount:.5f}</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(kb)
         )
-        await context.bot.send_message(chat_id=ADMIN_ID, text=admin_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(admin_keyboard))
-        await query.message.edit_text("✅ আপনার উইথড্র রিকোয়েস্ট অ্যাডমিনের কাছে পাঠানো হয়েছে।")
+        await query.edit_message_text("✅ রিকোয়েস্ট অ্যাডমিনের কাছে পাঠানো হয়েছে।")
 
-    # Admin Actions
-    elif data.startswith("admin_accept_"):
-        if user.id != ADMIN_ID: return
-        req_id = data.replace("admin_accept_", "")
+    elif data.startswith("acc_"):
+        if user.id != ADMIN_ID:
+            return
+        req_id = data[4:]
         if req_id in withdrawal_requests:
             req = withdrawal_requests.pop(req_id)
             await context.bot.send_message(
-                chat_id=req["user_id"],
-                text=f"✅ আপনার `${req['amount']}` উইথড্র রিকোয়েস্টটি সফলভাবে প্রসেস করা হয়েছে!"
+                req["user_id"],
+                f"✅ আপনার <b>${req['amount']:.5f}</b> উইথড্র সফলভাবে প্রসেস করা হয়েছে!",
+                parse_mode=ParseMode.HTML
             )
-            await query.message.edit_text("✅ Accept করা হয়েছে।")
+            await query.edit_message_text("✅ Accepted")
 
-    elif data.startswith("admin_reject_"):
-        if user.id != ADMIN_ID: return
-        req_id = data.replace("admin_reject_", "")
-        users_db[ADMIN_ID]["state"] = f"REJECT_WITHDRAW_{req_id}"
-        await query.message.reply_text("📝 রিজেক্ট করার কারণ লিখে পাঠান:")
+    elif data.startswith("rej_"):
+        if user.id != ADMIN_ID:
+            return
+        req_id = data[4:]
+        users_db[ADMIN_ID]["state"] = f"REJECT_{req_id}"
+        await query.message.reply_text("📝 রিজেক্টের কারণ লিখে পাঠান:")
 
-async def auto_release_numbers(user_id: int, delay: int):
+# ================== AUTO RELEASE ==================
+async def release_after(user_id: int, delay: int, bot):
     await asyncio.sleep(delay)
     if user_id in user_sessions:
         del user_sessions[user_id]
         try:
-            await Application.get_default().bot.send_message(
-                chat_id=user_id,
-                text="⏰ আপনার রিজার্ভকৃত নম্বরের সময়সীমা শেষ হয়েছে। নতুন নম্বর নিতে `Get Number` বাটন প্রেস করুন।"
+            await bot.send_message(
+                user_id,
+                "⏰ আপনার নাম্বার রিজার্ভের সময় শেষ। নতুন নাম্বার নিতে <b>Get Number</b> চাপুন।",
+                parse_mode=ParseMode.HTML
             )
         except:
             pass
 
-# ----------------- Admin Panel Commands ----------------- #
-
-async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================== ADMIN ==================
+async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("⚠️ এটি কেবল অ্যাডমিনের জন্য সংরক্ষিত কমান্ড!")
+        await update.message.reply_text("⚠️ শুধু অ্যাডমিন!")
         return
-
-    keyboard = [
-        [InlineKeyboardButton("➕ Add Numbers", callback_data="admin_add_num_srv")],
-        [InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")]
+    kb = [
+        [InlineKeyboardButton("➕ Add Numbers", callback_data="adm_add")],
+        [InlineKeyboardButton("📢 Broadcast", callback_data="adm_bc")]
     ]
-    await update.message.reply_text("⚙️ **Admin Control Panel**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text("⚙️ <b>Admin Panel</b>", parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb))
 
-async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    data = query.data
-    user = query.from_user
-
-    if user.id != ADMIN_ID:
-        await query.answer("Unauthorized", show_alert=True)
+    await query.answer()
+    if query.from_user.id != ADMIN_ID:
         return
+    data = query.data
 
-    if data == "admin_broadcast":
+    if data == "adm_bc":
         users_db[ADMIN_ID]["state"] = "WAITING_BROADCAST"
-        await query.message.reply_text("📢 ব্রডকাস্ট মেসেজটি লিখে পাঠান:")
+        await query.message.reply_text("📢 Broadcast মেসেজ লিখে পাঠান:")
 
-    elif data == "admin_add_num_srv":
-        keyboard = []
-        for srv in DEFAULT_SERVICES:
-            keyboard.append([InlineKeyboardButton(srv, callback_data=f"adm_select_srv_{srv}")])
-        await query.message.edit_text("📌 কোন সার্ভিস এ নম্বর যুক্ত করবেন?", reply_markup=InlineKeyboardMarkup(keyboard))
+    elif data == "adm_add":
+        kb = [[InlineKeyboardButton(s, callback_data=f"adm_srv_{s}")] for s in DEFAULT_SERVICES]
+        await query.edit_message_text("Service সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(kb))
 
-    elif data.startswith("adm_select_srv_"):
-        srv = data.replace("adm_select_srv_", "")
+    elif data.startswith("adm_srv_"):
+        srv = data[8:]
         users_db[ADMIN_ID]["temp_srv"] = srv
-
-        keyboard = [
-            [InlineKeyboardButton("Bangladesh", callback_data=f"adm_select_cnt_{srv}_Bangladesh")],
-            [InlineKeyboardButton("India", callback_data=f"adm_select_cnt_{srv}_India")],
-            [InlineKeyboardButton("USA", callback_data=f"adm_select_cnt_{srv}_USA")]
+        kb = [
+            [InlineKeyboardButton("Bangladesh", callback_data=f"adm_cnt_{srv}_Bangladesh")],
+            [InlineKeyboardButton("India", callback_data=f"adm_cnt_{srv}_India")],
+            [InlineKeyboardButton("USA", callback_data=f"adm_cnt_{srv}_USA")],
+            [InlineKeyboardButton("Egypt", callback_data=f"adm_cnt_{srv}_Egypt")],
+            [InlineKeyboardButton("Russia", callback_data=f"adm_cnt_{srv}_Russia")],
         ]
-        await query.message.edit_text(f"🌐 Service: **{srv}**\n📌 Country সিলেক্ট করুন:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text(f"Service: <b>{srv}</b>\nCountry সিলেক্ট করুন:", parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb))
 
-    elif data.startswith("adm_select_cnt_"):
-        _, _, srv, cnt = data.split("_", 3)
+    elif data.startswith("adm_cnt_"):
+        parts = data.split("_", 3)
+        srv, cnt = parts[2], parts[3]
         users_db[ADMIN_ID]["temp_srv"] = srv
         users_db[ADMIN_ID]["temp_cnt"] = cnt
-        users_db[ADMIN_ID]["state"] = "ADD_NUMBERS_INPUT"
-
-        await query.message.edit_text(
-            f"📝 **{srv} ({cnt})** এর জন্য নম্বরগুলো লিখে পাঠান।\n"
-            f"টেক্সট আকারে অথবা একাধিক নম্বর একসাথে পাঠাতে পারেন।"
+        users_db[ADMIN_ID]["state"] = "ADD_NUMBERS"
+        await query.edit_message_text(
+            f"📝 <b>{srv} → {cnt}</b>\n\nনাম্বারগুলো লিখে পাঠান (এক লাইনে বা একাধিক):",
+            parse_mode=ParseMode.HTML
         )
 
-# ----------------- RedXSMS Polling Task ----------------- #
-
-async def poll_redxsms_messages(app: Application):
-    headers = {
-        "Authorization": f"Bearer {API_KEY}",
-        "Accept": "application/json"
-    }
-    processed_ids: Set[str] = set()
-
+# ================== OTP POLLING ==================
+async def otp_polling(app: Application):
+    headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
     while True:
         try:
-            response = requests.get(f"{BASE_URL}/messages", headers=headers, params={'per_page': 15}, timeout=10)
-            if response.status_code == 200:
-                messages = response.json().get("data", [])
-                for item in reversed(messages):
-                    msg_id = str(item.get("id", item.get("received_at", "")))
-                    if not msg_id or msg_id in processed_ids:
+            r = requests.get(f"{BASE_URL}/messages", headers=headers, params={"per_page": 20}, timeout=10)
+            if r.status_code == 200:
+                for item in r.json().get("data", []):
+                    mid = str(item.get("id") or item.get("received_at") or "")
+                    if not mid or mid in processed_otps:
                         continue
 
-                    raw_number = str(item.get("number", "")).strip()
-                    msg_body = item.get("message", "") or ""
+                    raw = str(item.get("number", "")).strip()
+                    body = item.get("message", "") or ""
+                    otp_match = re.search(r"\b\d{3,8}\b", body)
+                    otp = otp_match.group(0) if otp_match else "N/A"
 
-                    otp_match = re.search(r'\b\d{3}[-\s]?\d{3}\b|\b\d{4,8}\b', msg_body)
-                    otp_code = otp_match.group(0) if otp_match else "N/A"
+                    text = (
+                        f"📩 <b>New OTP</b>\n\n"
+                        f"📱 Number: <code>{format_number(raw)}</code>\n"
+                        f"🔑 OTP: <code>{otp}</code>\n"
+                        f"💬 {body}"
+                    )
 
-                    # Check who owns this number
-                    assigned_user = None
-                    for uid, sess in user_sessions.items():
-                        if any(raw_number.endswith(num) for num in sess["numbers"]):
-                            assigned_user = uid
+                    # Send to group
+                    try:
+                        await app.bot.send_message(OTP_GROUP, text, parse_mode=ParseMode.HTML)
+                    except Exception as e:
+                        logger.error(f"Group send error: {e}")
+
+                    # Send to reserved user
+                    for uid, sess in list(user_sessions.items()):
+                        if any(raw.endswith(n) or n in raw for n in sess.get("numbers", [])):
+                            try:
+                                await app.bot.send_message(uid, text, parse_mode=ParseMode.HTML)
+                                users_db[uid]["balance"] += OTP_BONUS
+                                users_db[uid]["total_otp"] += 1
+                            except:
+                                pass
                             break
 
-                    out_text = f"📩 **New OTP Received!**\n\n📱 Number: `+{raw_number}`\n🔑 Code: `{otp_code}`\n💬 Message: {msg_body}"
-
-                    # Send to OTP Group
-                    try:
-                        await app.bot.send_message(chat_id=OTP_GROUP_LINK, text=out_text, parse_mode="Markdown")
-                    except Exception as e:
-                        logger.error(f"Group OTP Send Error: {e}")
-
-                    # Send to specific user if assigned
-                    if assigned_user:
-                        try:
-                            await app.bot.send_message(chat_id=assigned_user, text=out_text, parse_mode="Markdown")
-                            users_db[assigned_user]["balance"] += OTP_BONUS
-                            users_db[assigned_user]["total_otp"] += 1
-                        except Exception as e:
-                            logger.error(f"User OTP Send Error: {e}")
-
-                    processed_ids.add(msg_id)
-
+                    processed_otps.add(mid)
         except Exception as e:
-            logger.error(f"RedXSMS API Error: {e}")
+            logger.error(f"Polling error: {e}")
 
         await asyncio.sleep(3)
 
-# ----------------- Main App Setup ----------------- #
-
+# ================== MAIN ==================
 def main():
     if not BOT_TOKEN:
-        print("❌ Error: BOT_TOKEN is missing!")
+        print("❌ BOT_TOKEN missing")
         return
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Handlers
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("admin", admin_command))
-    app.add_handler(CallbackQueryHandler(check_join_callback, pattern="^check_join$"))
-    app.add_handler(CallbackQueryHandler(admin_callback, pattern="^adm_"))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("admin", admin_cmd))
+    app.add_handler(CallbackQueryHandler(check_join, pattern="^check_join$"))
+    app.add_handler(CallbackQueryHandler(admin_cb, pattern="^adm_"))
     app.add_handler(CallbackQueryHandler(callback_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message_input))
+    app.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, text_handler))
 
-    # Background task for OTP polling
-    loop = asyncio.get_event_loop()
-    loop.create_task(poll_redxsms_messages(app))
+    # Start OTP polling
+    async def post_init(application: Application):
+        asyncio.create_task(otp_polling(application))
+
+    app.post_init = post_init
 
     print("🚀 Bot is running...")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
